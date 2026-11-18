@@ -1,5 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { defineFieldType, type EditorProps, type FieldType } from '../core/field-type.js'
+import { en, type Messages } from '../core/messages.js'
+import { useMessages } from '../react/messages-context.js'
 
 export interface ImageTypeConfig {
   /** Store several images per cell (value `string[]`) instead of one (value `string`). */
@@ -13,6 +15,13 @@ export interface ImageTypeConfig {
   upload?: (file: File) => Promise<string>
   /** File types offered by the file picker. Default `image/*`. */
   accept?: string
+  /** Offer an image URL field in the editor. Default true. */
+  allowUrls?: boolean
+  /**
+   * Texts for validation errors (e.g. `zhCN.image`). The editor itself follows the
+   * table's messages.
+   */
+  messages?: Partial<Messages['image']>
 }
 
 const urlPattern = /^(https?:\/\/|data:image\/|blob:|\/|\.{1,2}\/)/i
@@ -39,6 +48,7 @@ export function createImageType(config: ImageTypeConfig = {}): FieldType<any, {}
   const limit = multiple ? config.maxCount ?? Infinity : 1
   const upload = config.upload ?? readAsDataUrl
   const accept = config.accept ?? 'image/*'
+  const errors = { ...en.image, ...config.messages }
   const toValue = (list: string[]) => multiple ? (list.length ? list : null) : list[0] ?? null
 
   function ImageCell({ value }: { value: unknown }) {
@@ -52,7 +62,11 @@ export function createImageType(config: ImageTypeConfig = {}): FieldType<any, {}
     )
   }
 
-  function ImageEditor({ value, initialText, onCommit, onCancel }: EditorProps<any, {}>) {
+  function ImageEditor({ value, initialText, onCommit, onCancel, onChange, onDraft }: EditorProps<any, {}> & {
+    onDraft?(draft: { value: unknown } | { error: string }): void
+  }) {
+    const t = { ...useMessages().image, ...config.messages }
+    const ui = useMessages().ui
     const [images, setImages] = useState(() => toList(value))
     const [pending, setPending] = useState<{ id: number; preview: string }[]>([])
     const [error, setError] = useState<string>()
@@ -64,6 +78,11 @@ export function createImageType(config: ImageTypeConfig = {}): FieldType<any, {}
     const nextId = useRef(0)
     const latest = useRef({ images, pending })
     latest.current = { images, pending }
+    // Report what would be committed, so saving or leaving the page can commit this editor.
+    useEffect(() => {
+      if (pending.length) onDraft?.({ error: t.waitForUpload })
+      else { onDraft?.({ value: toValue(images) }); onChange(toValue(images)) }
+    }, [images, pending]) // eslint-disable-line react-hooks/exhaustive-deps
 
     // Clicking anywhere outside the editor commits (focus is unreliable here: removing an
     // image removes the focused button, and the file picker takes focus away).
@@ -87,7 +106,7 @@ export function createImageType(config: ImageTypeConfig = {}): FieldType<any, {}
     const room = () => multiple ? limit - latest.current.images.length - latest.current.pending.length : 1
 
     function commit() {
-      if (latest.current.pending.length) { setError('Wait for the upload to finish'); return }
+      if (latest.current.pending.length) { setError(t.waitForUpload); return }
       onCommit(toValue(latest.current.images))
     }
 
@@ -97,9 +116,9 @@ export function createImageType(config: ImageTypeConfig = {}): FieldType<any, {}
 
     async function addFiles(files: File[]) {
       const accepted = files.filter(file => file.type.startsWith('image/'))
-      if (!accepted.length) { setError('Choose an image file'); return }
+      if (!accepted.length) { setError(t.chooseImage); return }
       const slots = Math.max(0, room())
-      if (accepted.length > slots) setError(slots ? `Only ${slots} more ${slots === 1 ? 'image fits' : 'images fit'}` : `At most ${limit} images`)
+      if (accepted.length > slots) setError(slots ? t.onlyMoreFit(slots) : t.atMost(limit))
       else setError(undefined)
       await Promise.all(accepted.slice(0, slots).map(async file => {
         const entry = { id: nextId.current++, preview: URL.createObjectURL(file) }
@@ -107,7 +126,7 @@ export function createImageType(config: ImageTypeConfig = {}): FieldType<any, {}
         try {
           add(await upload(file))
         } catch (failure) {
-          setError(`Upload failed: ${failure instanceof Error ? failure.message : String(failure)}`)
+          setError(ui.uploadFailed(failure instanceof Error ? failure.message : String(failure)))
         } finally {
           setPending(current => current.filter(item => item.id !== entry.id))
           URL.revokeObjectURL(entry.preview)
@@ -120,7 +139,7 @@ export function createImageType(config: ImageTypeConfig = {}): FieldType<any, {}
       const invalid = urls.find(entry => !urlPattern.test(entry))
       if (invalid) { setError(`"${invalid.slice(0, 40)}" is not an image URL`); return false }
       const slots = room()
-      if (urls.length > slots) { setError(slots ? `Only ${slots} more ${slots === 1 ? 'image fits' : 'images fit'}` : `At most ${limit} images`); return false }
+      if (urls.length > slots) { setError(slots ? t.onlyMoreFit(slots) : t.atMost(limit)); return false }
       for (const entry of urls) add(entry)
       setError(undefined)
       return true
@@ -136,7 +155,7 @@ export function createImageType(config: ImageTypeConfig = {}): FieldType<any, {}
         onPaste={event => {
           const files = [...event.clipboardData.files]
           if (files.length) { event.preventDefault(); void addFiles(files); return }
-          if (event.target !== urlInput.current) {
+          if (event.target !== urlInput.current && config.allowUrls !== false) {
             event.preventDefault()
             addUrls(event.clipboardData.getData('text/plain'))
           }
@@ -148,8 +167,8 @@ export function createImageType(config: ImageTypeConfig = {}): FieldType<any, {}
         <div className="cw-image-grid">
           {images.map((src, index) => (
             <figure key={`${index}:${src.slice(-24)}`} className="cw-image-tile">
-              <a href={src} target="_blank" rel="noreferrer" tabIndex={-1}><img src={src} alt={`Image ${index + 1}`} draggable={false} /></a>
-              <button type="button" className="cw-image-remove" aria-label={`Remove image ${index + 1}`}
+              <a href={src} target="_blank" rel="noreferrer" tabIndex={-1}><img src={src} alt="" draggable={false} /></a>
+              <button type="button" className="cw-image-remove" aria-label={t.remove(index + 1)}
                 onClick={() => {
                   setImages(current => current.filter((_, i) => i !== index))
                   // The button disappears; keep keyboard focus in the editor.
@@ -159,17 +178,17 @@ export function createImageType(config: ImageTypeConfig = {}): FieldType<any, {}
           ))}
           {pending.map(entry => (
             <figure key={entry.id} className="cw-image-tile" data-pending>
-              <img src={entry.preview} alt="Uploading" />
-              <span className="cw-spinner" aria-label="Uploading" />
+              <img src={entry.preview} alt={t.uploading} />
+              <span className="cw-spinner" aria-label={t.uploading} />
             </figure>
           ))}
           {canAdd && (
             <button type="button" className="cw-image-add" onClick={() => fileInput.current?.click()}>
-              <span aria-hidden="true">+</span>{multiple || !images.length ? 'Add' : 'Replace'}
+              <span aria-hidden="true">+</span>{multiple || !images.length ? t.add : t.replace}
             </button>
           )}
         </div>
-        <input ref={urlInput} className="cw-input-small cw-image-url" placeholder="Paste an image URL and press Enter" value={url}
+        {config.allowUrls !== false && <input ref={urlInput} className="cw-input-small cw-image-url" placeholder={t.urlPlaceholder} value={url}
           onChange={event => { setUrl(event.target.value); setError(undefined) }}
           onKeyDown={event => {
             if (event.key === 'Enter' && !event.nativeEvent.isComposing) {
@@ -178,15 +197,15 @@ export function createImageType(config: ImageTypeConfig = {}): FieldType<any, {}
               if (!url.trim()) commit()
               else if (addUrls(url)) setUrl('')
             }
-          }} />
+          }} />}
         {error && <div className="cw-image-error" role="alert">{error}</div>}
         <div className="cw-image-footer">
           <span className="cw-hint">
-            Drop or paste images{multiple && Number.isFinite(limit) ? ` · ${images.length}/${limit}` : ''}
+            {t.dropOrPaste}{multiple && Number.isFinite(limit) ? ` · ${images.length}/${limit}` : ''}
           </span>
           <span className="cw-spacer" />
-          <button type="button" className="cw-button" onClick={onCancel}>Cancel</button>
-          <button type="button" className="cw-button cw-primary" disabled={pending.length > 0} onClick={commit}>Done</button>
+          <button type="button" className="cw-button" onClick={onCancel}>{ui.cancel}</button>
+          <button type="button" className="cw-button cw-primary" disabled={pending.length > 0} onClick={commit}>{t.done}</button>
         </div>
         <input ref={fileInput} type="file" hidden accept={accept} multiple={multiple}
           onChange={event => { void addFiles([...event.target.files ?? []]); event.target.value = '' }} />
@@ -200,8 +219,8 @@ export function createImageType(config: ImageTypeConfig = {}): FieldType<any, {}
       const urls = text.split(/\s+/).filter(Boolean)
       if (!urls.length) return null
       const invalid = urls.find(entry => !urlPattern.test(entry))
-      if (invalid) return { error: 'Not an image URL' }
-      if (urls.length > limit) return { error: multiple ? `At most ${limit} images` : 'Only one image' }
+      if (invalid) return { error: errors.notImageUrl }
+      if (urls.length > limit) return { error: multiple ? errors.atMost(limit) : errors.onlyOne }
       return toValue(urls)
     },
     // Copy and paste carry the URLs, separated by spaces.
@@ -212,9 +231,9 @@ export function createImageType(config: ImageTypeConfig = {}): FieldType<any, {}
     },
     // Sort by number of images.
     compare: (a, b) => toList(a).length - toList(b).length,
-    validate: value => toList(value).length > limit ? `At most ${limit} images` : undefined,
+    validate: value => toList(value).length > limit ? errors.atMost(limit) : undefined,
     filters: {
-      countAtLeast: { label: 'has at least (images)', test: (value, arg: number) => toList(value).length >= Number(arg) },
+      countAtLeast: { label: errors.countAtLeast, test: (value, arg: number) => toList(value).length >= Number(arg) },
     },
     // Drop or paste images straight onto a cell: single replaces, multiple appends what fits.
     files: {
@@ -223,10 +242,10 @@ export function createImageType(config: ImageTypeConfig = {}): FieldType<any, {}
         const images = files.filter(file => file.type.startsWith('image/'))
         const urls = await Promise.all(images.slice(0, Number.isFinite(limit) ? limit : undefined).map(file => upload(file)))
         return current => {
-          if (!urls.length) return { error: 'No image files' }
+          if (!urls.length) return { error: errors.noImages }
           if (!multiple) return urls[0]!
           const list = [...toList(current), ...urls]
-          if (toList(current).length >= limit) return { error: `At most ${limit} images` }
+          if (toList(current).length >= limit) return { error: errors.atMost(limit) }
           return list.slice(0, limit)
         }
       },

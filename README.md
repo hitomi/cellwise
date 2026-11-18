@@ -10,6 +10,8 @@ A spreadsheet-like table editor for React, built around **editing many cells at 
 - **Image cells:** one image or a gallery per cell. Drop or paste images straight onto a cell, or use the editor (file picker, drag and drop, URL).
 - **Spreadsheet basics:** keyboard navigation, copy and paste with Excel and Google Sheets, drag-to-fill, undo and redo, filter, sort and search.
 - **Fast:** rows and columns are virtualized. A cell edit takes microseconds on 100k rows, no matter how long the history is.
+- **Live data:** pass newer rows any time. Unsaved edits are kept, and a value someone else changed while you were editing becomes a conflict you settle before saving.
+- **Localized:** English by default, Chinese with `cellwise/locales/zh-CN`, or your own messages.
 - **Typed:** columns are checked against your row type, so a wrong field or wrong options are compile errors.
 - **Extensible:** a custom field type is one object.
 
@@ -60,6 +62,71 @@ onSave={async ({ created, updated, deleted }) => {
 If the save throws, every change is kept so it can be retried. Edits made while a save is in
 flight stay unsaved. Invalid cells block saving.
 
+## Live data and conflicts
+
+Give the table newer rows whenever your source changes (a query cache, a subscription, a local
+database). With `useDataTable` or `<DataTable data={rows}>` this happens automatically when `data`
+changes; with a table object call `table.syncData(rows)`.
+
+- Cells you have not edited take the new value.
+- Cells you edited keep your value.
+- If the source changed a cell you also edited, the cell is marked as a **conflict**. Right-click it
+  to keep your value or use the latest one. Saving waits until conflicts are settled.
+- `dependsOn` makes a cell conflict when related fields change, e.g. an edited stock count when an
+  order holds stock at the same time:
+
+```ts
+{ field: 'available', type: 'number', dependsOn: ['held', 'onHand'] }
+```
+
+`table.setData(rows)` replaces everything instead (and clears unsaved changes).
+
+## Computed columns and custom cells
+
+```ts
+{ key: 'total', title: 'Total', type: 'number', precision: 2, value: row => row.price * row.quantity }
+{ field: 'status', type: 'select', options, render: (value, row) => <StatusPill status={value} /> }
+{ field: 'status', type: 'select', options, clickToEdit: true } // open the dropdown on the first click
+```
+
+Computed columns are read-only and sort, filter, search and copy like any other column.
+
+More column options:
+
+```ts
+{ field: 'name', type: 'text', pinned: true }                    // stays visible when scrolling sideways
+{ field: 'tags', type: 'multiSelect', options, allowCreate: true } // free tags, options are suggestions
+{ field: 'status', type: 'select', options, headerAction: <FilterButton /> } // extra header control
+```
+
+## Localization
+
+```tsx
+import { zhCN } from 'cellwise/locales/zh-CN'
+<DataTable messages={zhCN} ... />
+// or override single texts:
+<DataTable messages={{ ui: { save: 'Publish' } }} ... />
+```
+
+## Toolbar and saving from your own UI
+
+```tsx
+<DataTable
+  toolbar={{ filter: false, addRow: false, end: <NoteInput />, saveLabel: n => `Save (${n})` }}
+  onSaved={outcome => outcome.status === 'saved' && toast('Saved')}
+/>
+```
+
+`table.save()` commits the open editor first, so a value still being typed is saved too. For a
+navigation guard, call `table.commitEdit()` and then check `table.getStatus()`
+(`changedRows`, `editing`, `saving`). Other useful calls: `table.discardChanges()`,
+`table.select(range)`, `table.setRowFilter(row => …)`, and the options `canDeleteRow`,
+`duplicateRow`, `canInsertRows` and `searchText`.
+
+`onSave` receives `updated[].original`, the row as last loaded or saved, for optimistic
+concurrency checks on your server. Pass `onNotice` to show the table's short messages (a skipped
+paste, a blocked save) in your own toast instead of the status bar.
+
 ## Image cells
 
 ```tsx
@@ -74,7 +141,8 @@ columns={[{ field: 'photo', type: photo }, { field: 'gallery', type: gallery }]}
 
 Drop image files onto a cell, or paste one with ⌘/Ctrl+V. A single image is replaced; a gallery
 appends as many as fit. Enter opens the editor, where you can add, remove, drop, paste or enter URLs.
-Any field type can accept files through the `files` option of `defineFieldType`.
+Any field type can accept files through the `files` option of `defineFieldType`. Set
+`allowUrls: false` to hide the URL field when images must be uploaded.
 
 ## Custom field types
 

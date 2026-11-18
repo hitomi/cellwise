@@ -1,6 +1,7 @@
-import { StrictMode, useMemo, useState } from 'react'
+import { StrictMode, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { createImageType, DataTable, defineColumns, defineFieldType, type TableChanges } from '../src/index.js'
+import { zhCN } from '../src/locales/zh-cn.js'
 import '../src/styles.css'
 import './demo.css'
 
@@ -89,8 +90,8 @@ const categories = [
 const tags = ['new', 'sale', 'bestseller', 'limited', 'eco']
 
 const columns = defineColumns<Product>([
-  { field: 'photo', type: photoType, title: 'Photo', width: 64, sortable: false },
-  { field: 'name', type: 'text', title: 'Name', width: 220, required: true },
+  { field: 'photo', type: photoType, title: 'Photo', width: 64, sortable: false, pinned: true },
+  { field: 'name', type: 'text', title: 'Name', width: 220, required: true, pinned: true },
   { field: 'sku', type: 'text', title: 'SKU', width: 120, readOnly: true },
   { field: 'category', type: 'select', title: 'Category', options: categories, width: 140 },
   { field: 'tags', type: 'multiSelect', title: 'Tags', options: tags, width: 200 },
@@ -100,6 +101,8 @@ const columns = defineColumns<Product>([
   { field: 'launch', type: 'date', title: 'Launch', width: 130 },
   { field: 'rating', type: rating.with({ max: 5 }), title: 'Rating', width: 130 },
   { field: 'gallery', type: galleryType, title: 'Gallery (up to 6)', width: 150 },
+  // A computed, read-only column: follows edits to Price and Stock.
+  { key: 'stockValue', title: 'Stock value', type: 'number', precision: 2, value: row => (row.price ?? 0) * (row.stock ?? 0), width: 130 },
   { field: 'notes', type: 'text', title: 'Notes', width: 260 },
 ])
 
@@ -137,7 +140,17 @@ const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 
 function App() {
   const [size, setSize] = useState(1000)
-  const data = useMemo(() => makeRows(size), [size])
+  const [data, setData] = useState(() => makeRows(1000))
+  const [chinese, setChinese] = useState(false)
+  const [tick, setTick] = useState(1)
+
+  // Another user changes the first rows on the server: the table merges it in and keeps your edits.
+  function simulateRemoteChange() {
+    setData(rows => rows.map((row, index) => index < 3
+      ? { ...row, name: `${row.name.replace(/ \(remote \d+\)$/, '')} (remote ${tick})`, price: row.price === null ? 1 : Math.round(row.price * 105) / 100 }
+      : row))
+    setTick(value => value + 1)
+  }
   const [autoSave, setAutoSave] = useState(false)
   const [failNext, setFailNext] = useState(false)
   const [log, setLog] = useState<LogEntry[]>([])
@@ -167,18 +180,22 @@ function App() {
       <header className="app-header">
         <h1>Cellwise</h1>
         <label>Rows
-          <select value={size} onChange={event => setSize(Number(event.target.value))}>
+          <select value={size} onChange={event => { setSize(Number(event.target.value)); setData(makeRows(Number(event.target.value))) }}>
             <option value={1000}>1,000</option>
             <option value={100000}>100,000</option>
           </select>
         </label>
         <label><input type="checkbox" checked={autoSave} onChange={event => setAutoSave(event.target.checked)} /> Auto-save (1s)</label>
         <label><input type="checkbox" checked={failNext} onChange={event => setFailNext(event.target.checked)} /> Fail the next save</label>
+        <label><input type="checkbox" checked={chinese} onChange={event => setChinese(event.target.checked)} /> 中文</label>
+        <button type="button" onClick={simulateRemoteChange} title="Changes the name and price of rows 1–3, as if another user saved them">Simulate a change by another user</button>
         <button type="button" onClick={() => setLog([])}>Clear log</button>
       </header>
       <main className="app-main">
         <div className="app-table">
           <DataTable
+            ariaLabel="Products"
+            {...(chinese ? { messages: zhCN } : {})}
             data={data}
             columns={columns}
             createRow={() => ({ name: '', sku: '', category: 'hardware', tags: [], price: null, stock: 0, active: true, launch: null, rating: null, photo: null, gallery: [], notes: '' })}
@@ -195,6 +212,11 @@ function App() {
             <li><kbd>⌘E</kbd> or right-click → <b>Edit N cells…</b>: per-column operations (find &amp; replace, prefix, increase by, add/remove tags, shift dates…) with a live preview</li>
             <li>Right-click for <b>quick edits</b> by column type: set a category, add/remove tags, check/uncheck/toggle, ±1, round, today, shift dates, change case, set a rating</li>
             <li><kbd>Del</kbd>, paste and <kbd>Space</kbd> on checkboxes also apply to every range</li>
+          </ul>
+          <h2>Live data</h2>
+          <ul>
+            <li>Edit a name in rows 1–3, then click <b>Simulate a change by another user</b>: untouched cells update, your edit stays, and the name you edited becomes a <b>conflict</b> (purple). Right-click it to keep yours or take theirs; saving waits until conflicts are settled.</li>
+            <li><b>Stock value</b> is a computed, read-only column that follows Price × Stock.</li>
           </ul>
           <h2>Also</h2>
           <ul>

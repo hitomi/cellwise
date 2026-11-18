@@ -200,7 +200,7 @@ describe('saving', () => {
     expect(await t.save()).toEqual({ status: 'saved', errors: 0 })
     expect(onSave).toHaveBeenCalledWith({
       created: [expect.objectContaining({ name: 'New' })],
-      updated: [{ id: 1, row: expect.objectContaining({ price: 4 }), changed: ['price'] }],
+      updated: [{ id: 1, row: expect.objectContaining({ price: 4 }), original: data[0], changed: ['price'] }],
       deleted: [2],
     })
     expect(t.getStatus().changedRows).toBe(0)

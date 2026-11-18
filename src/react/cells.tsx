@@ -1,10 +1,17 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ComponentType, type ReactNode } from 'react'
-import { builtinTypes, type SelectOption, type SelectOptions } from '../core/builtin-types.js'
+import { isBuiltinType, type BuiltinTypeName, type SelectOption, type SelectOptions } from '../core/builtin-types.js'
 import type { ResolvedColumn } from '../core/columns.js'
 import { isParseError, type EditorProps } from '../core/field-type.js'
+import { useMessages } from './messages-context.js'
 
-/** Built-in editors also receive the resolved column. */
-export type InternalEditorProps = EditorProps<any, any> & { column: ResolvedColumn }
+/** Built-in editors also receive the resolved column, and report drafts the grid can commit. */
+export type InternalEditorProps = EditorProps<any, any> & {
+  column: ResolvedColumn
+  /** The row being edited. */
+  row?: unknown
+  /** The value the editor would commit now, or why it cannot. */
+  onDraft?(draft: { value: unknown } | { error: string }): void
+}
 
 const isMac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent)
 /** Platform label for a shortcut: `⌘E` on Apple devices, `Ctrl+E` elsewhere. */
@@ -29,8 +36,8 @@ function Pill({ label, color }: { label: string; color: string }) {
   return <span className="cw-pill" data-color={named ? color : undefined} style={named ? undefined : { background: color }}>{label}</span>
 }
 
-export function isBuiltin(column: ResolvedColumn, name: keyof typeof builtinTypes) {
-  return column.type === builtinTypes[name]
+export function isBuiltin(column: ResolvedColumn, name: BuiltinTypeName) {
+  return isBuiltinType(column.type, name)
 }
 
 /** Cell content for a column and value. */
@@ -62,7 +69,7 @@ export function editorFor(column: ResolvedColumn): ComponentType<InternalEditorP
 }
 
 /** Text input that parses with the column's type. Works for any field type. */
-export function TextEditor({ value, column, initialText, onCommit, onCancel }: InternalEditorProps) {
+export function TextEditor({ value, column, initialText, onCommit, onCancel, onDraft }: InternalEditorProps) {
   const [text, setText] = useState(() => initialText ?? (column.type.isEmpty(value) ? '' : column.type.format(value, column.options)))
   const [error, setError] = useState<string>()
   const ref = useRef<HTMLInputElement>(null)
@@ -74,6 +81,13 @@ export function TextEditor({ value, column, initialText, onCommit, onCancel }: I
     if (initialText === undefined) input.select()
     else input.setSelectionRange(input.value.length, input.value.length)
   }, [initialText])
+
+  // Report what would be committed, so saving or leaving can commit the open editor.
+  const draft = (next: string) => {
+    const result = column.type.parse(next, column.options)
+    onDraft?.(isParseError(result) ? result : { value: result })
+  }
+  useLayoutEffect(() => { if (initialText !== undefined) draft(initialText) }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   function commit(): boolean {
     const result = column.type.parse(text, column.options)
@@ -91,11 +105,12 @@ export function TextEditor({ value, column, initialText, onCommit, onCancel }: I
       <input
         ref={ref}
         className="cw-input"
+        aria-label={column.title}
         value={text}
         inputMode={isBuiltin(column, 'number') ? 'decimal' : undefined}
         placeholder={isBuiltin(column, 'date') ? 'YYYY-MM-DD' : undefined}
         style={{ textAlign: cellAlign(column) === 'end' ? 'right' : undefined }}
-        onChange={event => { setText(event.target.value); setError(undefined) }}
+        onChange={event => { setText(event.target.value); setError(undefined); draft(event.target.value) }}
         onKeyDown={event => {
           if ((event.key === 'Enter' || event.key === 'Tab') && !event.nativeEvent.isComposing) {
             event.preventDefault()
@@ -115,31 +130,37 @@ export function TextEditor({ value, column, initialText, onCommit, onCancel }: I
   )
 }
 
-function useOptionList(column: ResolvedColumn, initialText: string | undefined, selectedIndex: number) {
+function useOptionList(column: ResolvedColumn, initialText: string | undefined, selectedIndex: number, extra: readonly string[] = []) {
   const [query, setQuery] = useState(initialText ?? '')
   const options = optionsOf(column)
+  const all: string[] = [...options.map(option => typeof option === 'string' ? option : option.value), ...extra.filter(entry => !options.some(option => (typeof option === 'string' ? option : option.value) === entry))]
   const lower = query.trim().toLowerCase()
-  const filtered = options.filter(option => {
-    const { label } = optionInfo(options, typeof option === 'string' ? option : option.value)
-    return !lower || label.toLowerCase().includes(lower)
-  })
+  const filtered = all.filter(value => !lower || optionInfo(options, value).label.toLowerCase().includes(lower))
   const [active, setActive] = useState(Math.max(0, initialText ? 0 : selectedIndex))
   const clamped = Math.min(active, Math.max(0, filtered.length - 1))
   const input = useRef<HTMLInputElement>(null)
   useLayoutEffect(() => { input.current?.focus() }, [])
-  const valueAt = (index: number) => {
-    const option = filtered[index]
-    return option === undefined ? undefined : typeof option === 'string' ? option : option.value
-  }
-  function navigate(event: React.KeyboardEvent) {
-    if (event.key === 'ArrowDown') { event.preventDefault(); setActive(Math.min(clamped + 1, filtered.length - 1)); return true }
+  function navigate(event: React.KeyboardEvent, count: number) {
+    if (event.key === 'ArrowDown') { event.preventDefault(); setActive(Math.min(clamped + 1, count - 1)); return true }
     if (event.key === 'ArrowUp') { event.preventDefault(); setActive(Math.max(clamped - 1, 0)); return true }
     return false
   }
-  return { query, setQuery: (next: string) => { setQuery(next); setActive(0) }, options, filtered, active: clamped, setActive, input, valueAt, navigate }
+  return { query, setQuery: (next: string) => { setQuery(next); setActive(0) }, options, filtered, active: clamped, setActive, input, navigate }
 }
 
-function SelectEditor({ value, column, initialText, onCommit, onCancel }: InternalEditorProps) {
+let listIds = 0
+const useListId = () => useState(() => `cw-list-${++listIds}`)[0]
+
+/** An option as shown in a dropdown: the column's own renderer when it has one. */
+function OptionContent({ column, value, row }: { column: ResolvedColumn; value: string; row: unknown }) {
+  // A multi-select column renders lists of values, so one option is shown as a list of one.
+  if (column.render) return <>{column.render(isBuiltin(column, 'multiSelect') ? [value] : value, row)}</>
+  return <Pill {...optionInfo(optionsOf(column), value)} />
+}
+
+function SelectEditor({ value, column, row, initialText, onCommit, onCancel }: InternalEditorProps) {
+  const messages = useMessages()
+  const listId = useListId()
   const options = optionsOf(column)
   const list = useOptionList(column, initialText, options.findIndex(option => (typeof option === 'string' ? option : option.value) === value))
   const done = useRef(false)
@@ -149,14 +170,19 @@ function SelectEditor({ value, column, initialText, onCommit, onCancel }: Intern
       <input
         ref={list.input}
         className="cw-input"
-        placeholder="Find an option"
+        role="combobox"
+        aria-label={column.title}
+        aria-expanded="true"
+        aria-controls={listId}
+        aria-autocomplete="list"
+        placeholder={messages.ui.findOption}
         value={list.query}
         onChange={event => list.setQuery(event.target.value)}
         onKeyDown={event => {
-          if (list.navigate(event) || event.nativeEvent.isComposing) return
+          if (list.navigate(event, list.filtered.length) || event.nativeEvent.isComposing) return
           if (event.key === 'Enter' || event.key === 'Tab') {
             event.preventDefault()
-            const picked = list.valueAt(list.active)
+            const picked = list.filtered[list.active]
             if (picked !== undefined) pick(picked)
             else if (!list.query) pick(null)
             else event.stopPropagation()
@@ -164,56 +190,69 @@ function SelectEditor({ value, column, initialText, onCommit, onCancel }: Intern
         }}
         onBlur={() => { if (!done.current) onCancel() }}
       />
-      <div className="cw-options" role="listbox">
-        {value !== null && value !== undefined && (
-          <div className="cw-option cw-option-clear" onMouseDown={event => { event.preventDefault(); pick(null) }}>Clear</div>
+      <div className="cw-options" role="listbox" id={listId} aria-label={column.title}>
+        {value !== null && value !== undefined && !column.required && (
+          <div className="cw-option cw-option-clear" onMouseDown={event => { event.preventDefault(); pick(null) }}>{messages.bulk.clear}</div>
         )}
-        {list.filtered.map((option, index) => {
-          const optionValue = typeof option === 'string' ? option : option.value
-          return (
-            <div key={optionValue} role="option" aria-selected={optionValue === value} className="cw-option" data-active={index === list.active || undefined}
-              onMouseEnter={() => list.setActive(index)} onMouseDown={event => { event.preventDefault(); pick(optionValue) }}>
-              <Pill {...optionInfo(options, optionValue)} />
-            </div>
-          )
-        })}
-        {!list.filtered.length && <div className="cw-option-empty">No matching option</div>}
+        {list.filtered.map((optionValue, index) => (
+          <div key={optionValue} role="option" aria-selected={optionValue === value} aria-label={optionInfo(options, optionValue).label}
+            className="cw-option" data-active={index === list.active || undefined}
+            onMouseEnter={() => list.setActive(index)} onMouseDown={event => { event.preventDefault(); pick(optionValue) }}>
+            <OptionContent column={column} value={optionValue} row={row} />
+          </div>
+        ))}
+        {!list.filtered.length && <div className="cw-option-empty">{messages.ui.noMatchingOption}</div>}
       </div>
     </div>
   )
 }
 
-function MultiSelectEditor({ value, column, initialText, onCommit }: InternalEditorProps) {
+function MultiSelectEditor({ value, column, row, initialText, onCommit, onChange }: InternalEditorProps) {
+  const messages = useMessages()
+  const listId = useListId()
   const options = optionsOf(column)
+  const allowCreate = (column.options as SelectOptions).allowCreate ?? false
   const [selected, setSelected] = useState<string[]>(() => Array.isArray(value) ? [...value] : [])
-  const list = useOptionList(column, initialText, 0)
+  // Values added in this editor (free tags) are listed alongside the options.
+  const list = useOptionList(column, initialText, 0, selected)
+  const typed = list.query.trim()
+  const canCreate = allowCreate && typed !== '' && !list.filtered.some(entry => optionInfo(options, entry).label.toLowerCase() === typed.toLowerCase())
+  const ordered = (values: string[]) => {
+    const known = options.map(option => typeof option === 'string' ? option : option.value).filter(entry => values.includes(entry))
+    const result = [...known, ...values.filter(entry => !known.includes(entry))]
+    return result.length ? result : null
+  }
+  useEffect(() => { onChange(ordered(selected)) }, [selected]) // eslint-disable-line react-hooks/exhaustive-deps
   const done = useRef(false)
   const finish = () => {
     if (done.current) return
     done.current = true
-    // Keep the option order from the column definition.
-    const ordered = options.map(option => typeof option === 'string' ? option : option.value).filter(entry => selected.includes(entry))
-    onCommit(ordered.length ? ordered : null)
+    onCommit(ordered(selected))
   }
+  // Clicking elsewhere commits through the input's blur. (Committing on unmount would
+  // close the editor at once under React StrictMode, which mounts effects twice.)
   const toggle = (entry: string) => setSelected(current => current.includes(entry) ? current.filter(item => item !== entry) : [...current, entry])
-  // Commit when the editor closes by clicking elsewhere.
-  const latest = useRef(finish)
-  latest.current = finish
-  useEffect(() => () => latest.current(), [])
+  const createIndex = canCreate ? list.filtered.length : -1
   return (
     <div className="cw-dropdown">
       <input
         ref={list.input}
         className="cw-input"
-        placeholder="Find an option"
+        role="combobox"
+        aria-label={column.title}
+        aria-expanded="true"
+        aria-controls={listId}
+        aria-autocomplete="list"
+        placeholder={messages.ui.findOption}
         value={list.query}
         onChange={event => list.setQuery(event.target.value)}
         onKeyDown={event => {
-          if (list.navigate(event) || event.nativeEvent.isComposing) return
+          if (list.navigate(event, list.filtered.length + (canCreate ? 1 : 0)) || event.nativeEvent.isComposing) return
           if (event.key === 'Enter' && !(event.metaKey || event.ctrlKey)) {
             event.preventDefault()
             event.stopPropagation()
-            const entry = list.valueAt(list.active)
+            if (list.active === createIndex) { toggle(typed); list.setQuery(''); return }
+            const entry = list.filtered[list.active]
             if (entry !== undefined) { toggle(entry); list.setQuery('') }
           } else if (event.key === 'Tab' || event.key === 'Enter') {
             event.preventDefault()
@@ -222,19 +261,23 @@ function MultiSelectEditor({ value, column, initialText, onCommit }: InternalEdi
         }}
         onBlur={finish}
       />
-      <div className="cw-options" role="listbox" aria-multiselectable>
-        {list.filtered.map((option, index) => {
-          const entry = typeof option === 'string' ? option : option.value
-          return (
-            <div key={entry} role="option" aria-selected={selected.includes(entry)} className="cw-option" data-active={index === list.active || undefined}
-              onMouseEnter={() => list.setActive(index)} onMouseDown={event => { event.preventDefault(); toggle(entry) }}>
-              <span className="cw-check" data-checked={selected.includes(entry) || undefined} />
-              <Pill {...optionInfo(options, entry)} />
-            </div>
-          )
-        })}
+      <div className="cw-options" role="listbox" id={listId} aria-label={column.title} aria-multiselectable>
+        {list.filtered.map((entry, index) => (
+          <div key={entry} role="option" aria-selected={selected.includes(entry)} aria-label={optionInfo(options, entry).label}
+            className="cw-option" data-active={index === list.active || undefined}
+            onMouseEnter={() => list.setActive(index)} onMouseDown={event => { event.preventDefault(); toggle(entry) }}>
+            <span className="cw-check" data-checked={selected.includes(entry) || undefined} />
+            <OptionContent column={column} value={entry} row={row} />
+          </div>
+        ))}
+        {canCreate && (
+          <div role="option" aria-selected={false} className="cw-option cw-option-create" data-active={list.active === createIndex || undefined}
+            onMouseEnter={() => list.setActive(createIndex)} onMouseDown={event => { event.preventDefault(); toggle(typed); list.setQuery('') }}>
+            {messages.ui.createOption(typed)}
+          </div>
+        )}
       </div>
-      <div className="cw-dropdown-hint">Enter toggles · Tab to finish</div>
+      <div className="cw-dropdown-hint">{messages.ui.multiSelectHint}</div>
     </div>
   )
 }

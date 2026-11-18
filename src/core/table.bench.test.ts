@@ -63,6 +63,16 @@ describe('performance budget, 100k rows × 30 columns', () => {
     expect(searchTime).toBeLessThan(400)
   })
 
+  it('syncs a new version of 100k rows with edits under 150 ms', () => {
+    const table = createTable({ data, columns })
+    for (let i = 0; i < 1000; i++) table.setCell(i * 50, 'name', `edit ${i}`)
+    const next = data.map((row, index) => index % 10 === 0 ? { ...row, amount: row.amount + 1 } : row)
+    const elapsed = time(() => table.syncData(next))
+    console.info(`sync 100k rows: ${elapsed.toFixed(1)} ms`)
+    expect(elapsed).toBeLessThan(150)
+    expect(table.getStatus().changedRows).toBe(1000)
+  })
+
   it('deletes and restores 10k rows under 100 ms each', () => {
     const table = createTable({ data, columns })
     const keys = Array.from({ length: 10_000 }, (_, index) => index * 10)

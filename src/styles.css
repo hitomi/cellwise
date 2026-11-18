@@ -148,7 +148,7 @@
   .cw-active { position: absolute; z-index: 2; pointer-events: none; box-shadow: inset 0 0 0 2px var(--cw-accent); }
   .cw-fill-handle {
     position: absolute; z-index: 3; width: 8px; height: 8px; background: var(--cw-accent);
-    border: 1px solid var(--cw-bg); cursor: crosshair;
+    border: 1px solid var(--cw-bg); cursor: crosshair; transform: translate(-50%, -50%);
   }
   .cw-fill-preview { position: absolute; z-index: 2; pointer-events: none; outline: 1px dashed var(--cw-accent); outline-offset: -1px; }
 
@@ -357,4 +357,39 @@
     .cw-root:not([data-theme='light']) .cw-cell-busy { background: rgb(0 0 0 / 0.4); }
   }
   .cw-cell-busy .cw-spinner { width: 16px; height: 16px; border-color: var(--cw-border); border-top-color: var(--cw-accent); }
+}
+
+@layer cellwise {
+  /* a cell changed in the source while it had an unsaved edit */
+  .cw-root { --cw-conflict: #9333ea; --cw-conflict-soft: #f5eefe; }
+  @media (prefers-color-scheme: dark) {
+    .cw-root:not([data-theme='light']) { --cw-conflict: #c084fc; --cw-conflict-soft: #2e1f3d; }
+  }
+  .cw-cell[data-conflict] { background: var(--cw-conflict-soft); box-shadow: inset 0 0 0 1px var(--cw-conflict); }
+  .cw-cell[data-conflict]::after {
+    content: ''; position: absolute; top: 0; right: 0; border-style: solid; border-width: 0 8px 8px 0;
+    border-color: transparent var(--cw-conflict) transparent transparent;
+  }
+  .cw-menu-item:disabled { opacity: 0.45; cursor: default; }
+  .cw-menu-item:disabled:hover { background: none; }
+}
+
+@layer cellwise {
+  /* pinned columns stay beside the row numbers */
+  .cw-row, .cw-header { display: flex; }
+  .cw-rowhead, .cw-corner { flex: none; }
+  .cw-pinned {
+    position: sticky; z-index: 3; flex: none; height: 100%;
+    box-shadow: 1px 0 0 var(--cw-border), 4px 0 6px -4px rgb(15 23 42 / 0.18);
+  }
+  .cw-header .cw-pinned { z-index: 4; background: var(--cw-header-bg); }
+  .cw-sort-priority { font-size: 10px; margin-left: 1px; vertical-align: super; }
+}
+
+@layer cellwise {
+  .cw-option-create { color: var(--cw-accent); font-weight: 500; }
+}
+
+@layer cellwise {
+  .cw-header-action { display: inline-flex; align-items: center; flex: none; }
 }

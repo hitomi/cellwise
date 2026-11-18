@@ -1,5 +1,6 @@
 import { resolveColumn, type Column, type FieldKey, type ResolvedColumn, type RowId } from './columns.js'
 import { isParseError } from './field-type.js'
+import { resolveMessages, type Messages, type MessagesInput } from './messages.js'
 import { parseTsv, serializeTsv } from './tsv.js'
 
 /** Stable internal row key. Equals the row id for loaded rows; new rows get a temporary key. */
@@ -59,7 +60,8 @@ export interface Sort {
 
 export interface TableChanges<Row> {
   created: Row[]
-  updated: { id: RowId; row: Row; changed: FieldKey<Row>[] }[]
+  /** `original` is the row as last loaded or saved, e.g. for optimistic-concurrency checks. */
+  updated: { id: RowId; row: Row; original: Row; changed: FieldKey<Row>[] }[]
   deleted: RowId[]
 }
 
@@ -87,6 +89,9 @@ export type SaveOutcome =
   | { status: 'saved'; errors: number }
   | { status: 'nothing-to-save' }
   | { status: 'invalid'; cells: number }
+  | { status: 'conflict'; cells: number }
+  /** The open editor holds a value that cannot be committed (e.g. unparseable text). */
+  | { status: 'editing' }
   | { status: 'failed'; error: string }
 
 export interface TableOptions<Row> {
@@ -102,6 +107,24 @@ export interface TableOptions<Row> {
   readOnly?: boolean
   /** Undo steps kept. Default 500. */
   historyLimit?: number
+  /** Texts for errors and labels; e.g. `zhCN` from `cellwise/locales/zh-CN`. */
+  messages?: MessagesInput
+  /** Whether a row may be deleted. Default: every row. */
+  canDeleteRow?: (row: Row, info: { isNew: boolean }) => boolean
+  /** Values for a copy of a row. Default: the row without its id field. */
+  duplicateRow?: (row: Row) => Partial<Row>
+  /** Extra text a row is found by in search, e.g. names shown only inside a custom cell. */
+  searchText?: (row: Row) => string
+  /** Whether users may add rows (insert, duplicate, paste past the end). Default true. */
+  canInsertRows?: boolean
+}
+
+/** Connects the table to its rendered grid, which owns selection and the open editor. */
+export interface TableUI {
+  /** Commit the open editor. False when its value cannot be committed. */
+  commitEdit(): boolean
+  isEditing(): boolean
+  select(target: CellTarget): void
 }
 
 export interface TableStatus {
@@ -110,6 +133,10 @@ export interface TableStatus {
   /** Rows created, updated or deleted since the last save. */
   changedRows: number
   invalidCells: number
+  /** Cells whose source value changed while they had an unsaved edit. */
+  conflictCells: number
+  /** An editor is open in the grid. */
+  editing: boolean
   saving: boolean
   saveError: string | undefined
 }
@@ -118,6 +145,8 @@ export interface CellState {
   value: unknown
   changed: boolean
   error: string | undefined
+  /** Present when the source changed this cell while it had an unsaved edit. */
+  conflict: { theirs: unknown } | undefined
 }
 
 type Entry<Row> = { key: RowKey; row: Row; at: number; viewAt: number }
@@ -137,6 +166,12 @@ export function createTable<Row>(options: TableOptions<Row>) {
   let autoSave = options.autoSave
   let readOnly = options.readOnly ?? false
   let createRowValues = options.createRow ?? (() => ({}))
+  let messages: Messages = resolveMessages(options.messages)
+  let canDeleteRow = options.canDeleteRow
+  let duplicateRowValues = options.duplicateRow
+  let searchText = options.searchText
+  let canInsertRows = options.canInsertRows ?? true
+  let ui: TableUI | null = null
 
   let columns: readonly ResolvedColumn<Row>[] = []
   let columnByField = new Map<string, ResolvedColumn<Row>>()
@@ -152,12 +187,20 @@ export function createTable<Row>(options: TableOptions<Row>) {
   const changed = new Map<RowKey, Set<string>>()
   const invalid = new Map<RowKey, Map<string, string>>()
   const saveErrors = new Map<RowKey, string>()
+  const conflicts = new Map<RowKey, Map<string, unknown>>()
+  // Rows being saved, and rows saved but not yet seen again from the source. Their next
+  // source version is the result of the user's own save (including fields the server
+  // derives from it), so it is taken as the new baseline without conflict checks.
+  const inFlight = new Set<RowKey>()
+  const sourceDuringSave = new Map<RowKey, Row>()
+  const awaitingSource = new Set<RowKey>()
   const idAlias = new Map<RowId, RowKey>()
   let nextNewKey = 1
 
   let filters: readonly Filter[] = []
   let sort: readonly Sort[] = []
   let search = ''
+  let rowFilter: ((row: Row) => boolean) | null = null
 
   let undoStack: Op<Row>[][] = []
   let redoStack: Op<Row>[][] = []
@@ -231,6 +274,8 @@ export function createTable<Row>(options: TableOptions<Row>) {
       rows.set(key, copy)
     }
     ;(copy as Record<string, unknown>)[field] = value
+    // Editing a conflicting cell is the user's decision about it.
+    clearConflict(key, field)
     ops.push({ t: 'set', key, field, before, after: value })
     touch(key, field)
     return true
@@ -266,6 +311,7 @@ export function createTable<Row>(options: TableOptions<Row>) {
       changed.delete(key)
       invalid.delete(key)
       saveErrors.delete(key)
+      conflicts.delete(key)
       if (created.has(key)) created.delete(key)
       else deleted.set(key, baseline.get(key)!)
     }
@@ -281,9 +327,10 @@ export function createTable<Row>(options: TableOptions<Row>) {
     const row = rows.get(key)
     if (!row) return
     const base = baseline.get(key)
-    const list = fields === 'all' ? columns.map(column => column.field) : fields
+    const list = fields === 'all' ? columns.filter(column => !column.computed).map(column => column.field) : fields
     for (const field of list) {
       const column = columnByField.get(field)
+      if (column?.computed) continue
       if (base) setFlag(changed, key, field, !sameValue(column, (base as R)[field], (row as R)[field]))
       if (column) {
         const error = column.validate((row as R)[field] ?? null, row)
@@ -309,9 +356,11 @@ export function createTable<Row>(options: TableOptions<Row>) {
 
   /** Replace the column definitions. `notify: false` updates callbacks without re-rendering. */
   function setColumns(definitions: readonly Column<Row>[], notify = true) {
-    const resolved = definitions.map(resolveColumn)
+    // Pinned columns are shown first, in their given order.
+    const all = definitions.map(definition => resolveColumn(definition, messages))
+    const resolved = [...all.filter(column => column.pinned), ...all.filter(column => !column.pinned)]
     const byField = new Map(resolved.map(column => [column.field, column]))
-    if (byField.size !== resolved.length) throw new Error('Each column needs a unique field.')
+    if (byField.size !== resolved.length) throw new Error('Each column needs a unique field or key.')
     columns = resolved
     columnByField = byField
     if (notify) emit()
@@ -331,7 +380,7 @@ export function createTable<Row>(options: TableOptions<Row>) {
       order[index] = id
     })
     baseline = new Map(rows)
-    created.clear(); deleted.clear(); changed.clear(); invalid.clear(); saveErrors.clear(); idAlias.clear()
+    created.clear(); deleted.clear(); changed.clear(); invalid.clear(); saveErrors.clear(); idAlias.clear(); conflicts.clear()
     undoStack = []
     redoStack = []
     saveError = undefined
@@ -341,27 +390,35 @@ export function createTable<Row>(options: TableOptions<Row>) {
 
   // ---- view ---------------------------------------------------------------
 
-  function rebuildView() {
-    let keys = order
+  /** The current filters, search and row filter as one predicate; null when nothing filters. */
+  function viewPredicate(): ((row: Row) => boolean) | null {
     const active = filters.flatMap(filter => {
       const column = columnByField.get(filter.field)
       const operator = column?.type.filters[filter.operator]
       return column && operator ? [{ column, operator, value: filter.value }] : []
     })
     const query = search.trim().toLowerCase()
-    if (active.length || query) {
-      keys = keys.filter(key => {
-        const row = rows.get(key) as R
-        for (const { column, operator, value } of active) {
-          const cell = row[column.field]
-          if (!operator.test(column.type.isEmpty(cell) ? null : cell, value, column.options)) return false
-        }
-        return !query || columns.some(column => {
-          const cell = row[column.field]
-          return !column.type.isEmpty(cell) && column.type.format(cell, column.options).toLowerCase().includes(query)
-        })
+    const predicate = rowFilter
+    if (!active.length && !query && !predicate) return null
+    return row => {
+      if (predicate && !predicate(row)) return false
+      for (const { column, operator, value } of active) {
+        const cell = column.get(row)
+        if (!operator.test(column.type.isEmpty(cell) ? null : cell, value, column.options)) return false
+      }
+      if (!query) return true
+      if (searchText?.(row).toLowerCase().includes(query)) return true
+      return columns.some(column => {
+        const cell = column.get(row)
+        return !column.type.isEmpty(cell) && column.type.format(cell, column.options).toLowerCase().includes(query)
       })
     }
+  }
+
+  function rebuildView() {
+    let keys = order
+    const passes = viewPredicate()
+    if (passes) keys = keys.filter(key => passes(rows.get(key)!))
     const sorts = sort.flatMap(entry => {
       const column = columnByField.get(entry.field)
       return column ? [{ column, sign: entry.direction === 'desc' ? -1 : 1 }] : []
@@ -369,7 +426,7 @@ export function createTable<Row>(options: TableOptions<Row>) {
     if (sorts.length) {
       // Read each sort value once, then sort positions. Empty cells sort last in both directions.
       const values = sorts.map(({ column }) => keys.map(key => {
-        const cell = (rows.get(key) as R)[column.field]
+        const cell = column.get(rows.get(key)!)
         return column.type.isEmpty(cell) ? null : cell
       }))
       const positions = keys.map((_, index) => index)
@@ -392,10 +449,11 @@ export function createTable<Row>(options: TableOptions<Row>) {
     viewIndex = null
   }
 
-  function setView(next: { filters?: readonly Filter[]; sort?: readonly Sort[]; search?: string }) {
+  function setView(next: { filters?: readonly Filter[]; sort?: readonly Sort[]; search?: string; rowFilter?: ((row: Row) => boolean) | null }) {
     if (next.filters) filters = next.filters
     if (next.sort) sort = next.sort
     if (next.search !== undefined) search = next.search
+    if (next.rowFilter !== undefined) rowFilter = next.rowFilter
     rebuildView()
     emit()
   }
@@ -408,19 +466,19 @@ export function createTable<Row>(options: TableOptions<Row>) {
   // ---- edits --------------------------------------------------------------
 
   function editable(key: RowKey, field: string): string | undefined {
-    if (readOnly) return 'The table is read-only'
+    if (readOnly) return messages.errors.tableReadOnly
     const column = columnByField.get(field)
     const row = rows.get(key)
-    if (!column) return `Unknown column "${field}"`
-    if (!row) return 'Row not found'
-    if (column.isReadOnly(row)) return 'Read-only'
+    if (!column) return messages.errors.unknownColumn(field)
+    if (!row) return messages.errors.rowNotFound
+    if (column.isReadOnly(row)) return messages.errors.cellReadOnly
     return undefined
   }
 
   /** Parse text with the column's type. */
   function parseCell(field: string, text: string): { value: unknown } | { error: string } {
     const column = columnByField.get(field)
-    if (!column) return { error: `Unknown column "${field}"` }
+    if (!column) return { error: messages.errors.unknownColumn(field) }
     const result = column.type.parse(text, column.options)
     return isParseError(result) ? result : { value: result }
   }
@@ -490,7 +548,7 @@ export function createTable<Row>(options: TableOptions<Row>) {
     for (let r = bounds.rowStart; r <= bounds.rowEnd; r++) {
       const row = rows.get(view[r]!) as R
       const line: string[] = []
-      for (let c = bounds.colStart; c <= bounds.colEnd; c++) line.push(formatCell(columns[c]!, row[columns[c]!.field]))
+      for (let c = bounds.colStart; c <= bounds.colEnd; c++) line.push(formatCell(columns[c]!, columns[c]!.get(row)))
       matrix.push(line)
     }
     return matrix
@@ -561,7 +619,7 @@ export function createTable<Row>(options: TableOptions<Row>) {
         const line = matrix[r % height]!
         const key = view[position]
         if (key === undefined) {
-          if (readOnly) break
+          if (readOnly || !canInsertRows) break
           // Past the last row: build the new row with its pasted values before inserting it.
           const newKey = `new:${nextNewKey++}`
           const row = { ...createRowValues() } as R
@@ -591,7 +649,7 @@ export function createTable<Row>(options: TableOptions<Row>) {
 
   /** Empty every editable cell. Read-only cells are skipped silently. */
   function clear(target: CellTarget): EditResult {
-    if (readOnly) return { applied: 0, errors: [{ row: view[0]!, field: columns[0]?.field ?? '', message: 'The table is read-only' }] }
+    if (readOnly) return { applied: 0, errors: [{ row: view[0]!, field: columns[0]?.field ?? '', message: messages.errors.tableReadOnly }] }
     let applied = 0
     run('history', () => forEachCell(target, (key, column) => {
       if (!editable(key, column.field) && write(key, column.field, null)) applied++
@@ -647,7 +705,7 @@ export function createTable<Row>(options: TableOptions<Row>) {
       if (!update) return
       const reason = editable(key, column.field)
       if (reason) { errors.push({ row: key, field: column.field, message: reason }); return }
-      const current = (rows.get(key) as R)[column.field]
+      const current = column.get(rows.get(key)!)
       let next: unknown
       try {
         next = update(column.type.isEmpty(current) ? null : current, column)
@@ -699,7 +757,7 @@ export function createTable<Row>(options: TableOptions<Row>) {
         const sourceRow = from.rowStart + mod(r - from.rowStart, height)
         const sourceColumn = columns[from.colStart + mod(c - from.colStart, width)]!
         const column = columns[c]!
-        let value = (rows.get(view[sourceRow]!) as R)[sourceColumn.field]
+        let value = sourceColumn.get(rows.get(view[sourceRow]!)!)
         if (sourceColumn !== column) {
           // Across columns of different types, convert through text.
           const parsed = parseCell(column.field, formatCell(sourceColumn, value))
@@ -717,7 +775,7 @@ export function createTable<Row>(options: TableOptions<Row>) {
 
   /** Insert one new row before or after another row (default: at the end). Returns its key. */
   function insertRow(params: { before?: RowKey; after?: RowKey; values?: Partial<Row> } = {}): RowKey | undefined {
-    if (readOnly) return undefined
+    if (readOnly || !canInsertRows) return undefined
     const key = `new:${nextNewKey++}`
     const row = { ...createRowValues(), ...params.values } as Row
     const anchor = params.before ?? params.after
@@ -732,7 +790,7 @@ export function createTable<Row>(options: TableOptions<Row>) {
 
   /** Copy rows; each copy is placed right after its original. Returns the new keys. */
   function duplicateRows(keys: readonly RowKey[]): RowKey[] {
-    if (readOnly) return []
+    if (readOnly || !canInsertRows) return []
     const wanted = new Set(keys)
     const viewAfter = new Map<RowKey, number>()
     view.forEach((key, index) => { if (wanted.has(key)) viewAfter.set(key, index) })
@@ -741,9 +799,14 @@ export function createTable<Row>(options: TableOptions<Row>) {
     // Walk the natural order so positions account for copies inserted before them.
     order.forEach((key, index) => {
       if (!wanted.has(key)) return
-      const row = { ...rows.get(key)! } as R
-      const id = typeof idOption === 'string' ? idOption : undefined
-      if (id) delete row[id]
+      const source = rows.get(key)!
+      let row: R
+      if (duplicateRowValues) row = { ...duplicateRowValues(source) } as R
+      else {
+        row = { ...source } as R
+        const id = typeof idOption === 'string' ? idOption : undefined
+        if (id) delete row[id]
+      }
       const viewAt = viewAfter.get(key)
       entries.push({ key: `new:${nextNewKey++}`, row, at: index + 1 + added, viewAt: viewAt === undefined ? -1 : viewAt + 1 })
       added++
@@ -755,9 +818,183 @@ export function createTable<Row>(options: TableOptions<Row>) {
     return entries.map(entry => entry.key)
   }
 
+  /** Whether a row may be deleted (see the `canDeleteRow` option). */
+  function canDelete(key: RowKey) {
+    const row = rows.get(key)
+    return !readOnly && row !== undefined && (canDeleteRow?.(row, { isNew: created.has(key) }) ?? true)
+  }
+
+  /** Delete rows, skipping those `canDeleteRow` refuses. Returns how many were deleted. */
   function deleteRows(keys: Iterable<RowKey>): number {
     if (readOnly) return 0
-    return run('history', () => deleteKeys(keys))
+    return run('history', () => deleteKeys([...keys].filter(canDelete)))
+  }
+
+  /** Undo every unsaved change, as one undo step. */
+  function discardChanges() {
+    run('history', () => {
+      for (const [key, fields] of [...changed]) {
+        const base = baseline.get(key) as R
+        for (const field of [...fields]) write(key, field, base[field])
+      }
+      deleteKeys([...created])
+      const restored = [...deleted].map(([key, row]) => ({ key, row, at: order.length, viewAt: view.length }))
+      restored.forEach((entry, index) => { entry.at += index; entry.viewAt += index })
+      insertEntries(restored)
+    })
+    conflicts.clear()
+    emit()
+  }
+
+  // ---- source updates and conflicts ---------------------------------------
+
+  function clearConflict(key: RowKey, field: string) {
+    const cells = conflicts.get(key)
+    if (!cells) return
+    cells.delete(field)
+    if (!cells.size) conflicts.delete(key)
+  }
+
+  function markConflict(key: RowKey, field: string, theirs: unknown) {
+    const cells = conflicts.get(key)
+    if (cells) cells.set(field, theirs)
+    else conflicts.set(key, new Map([[field, theirs]]))
+  }
+
+  /**
+   * Take a newer version of the data from the source while keeping unsaved edits.
+   * Fields without local edits take the source value. An edited field the source
+   * also changed (or one whose `dependsOn` fields changed) becomes a conflict to
+   * resolve before saving. Rows gone from the source are removed; new rows appear.
+   */
+  function syncData(data: readonly Row[]) {
+    const incoming = new Map<RowKey, Row>()
+    const sourceOrder: RowKey[] = []
+    for (const row of data) {
+      const id = getId(row)
+      if (typeof id !== 'string' && typeof id !== 'number') throw new Error('A row from the source has no id.')
+      const key = idAlias.get(id) ?? id
+      incoming.set(key, row)
+      sourceOrder.push(key)
+    }
+    const removed = new Set<RowKey>()
+    run('none', () => {
+      for (const [key, theirs] of incoming) {
+        const base = baseline.get(key)
+        if (deleted.has(key)) { baseline.set(key, theirs); deleted.set(key, theirs); continue }
+        const current = rows.get(key)
+        if (!current || !base) {
+          if (created.has(key)) continue
+          rows.set(key, theirs)
+          baseline.set(key, theirs)
+          touch(key, 'all')
+          continue
+        }
+        if (base === theirs) continue
+        const ownSave = inFlight.has(key) || awaitingSource.has(key)
+        if (inFlight.has(key)) sourceDuringSave.set(key, theirs)
+        awaitingSource.delete(key)
+        if (current === base) {
+          rows.set(key, theirs)
+        } else if (ownSave) {
+          // Keep only what was edited since the save; everything else is the source's.
+          const merged = { ...current } as R
+          for (const field of new Set([...Object.keys(base as object), ...Object.keys(theirs as object)])) {
+            const column = columnByField.get(field)
+            const mine = (current as R)[field], before = (base as R)[field]
+            const edited = column ? !sameValue(column, mine, before) : !sameData(mine, before)
+            if (!edited) (merged as Record<string, unknown>)[field] = (theirs as R)[field]
+          }
+          rows.set(key, merged)
+        } else {
+          const merged = { ...current } as R
+          const fields = new Set([...Object.keys(base as object), ...Object.keys(theirs as object)])
+          for (const field of fields) {
+            const column = columnByField.get(field)
+            const mine = (current as R)[field], before = (base as R)[field], after = (theirs as R)[field]
+            if (!column) {
+              // Fields without a column are not edited in the grid: take the source value.
+              (merged as Record<string, unknown>)[field] = sameData(mine, before) ? after : mine
+              continue
+            }
+            const edited = !sameValue(column, mine, before)
+            if (!edited) (merged as Record<string, unknown>)[field] = after
+            else if (sameValue(column, after, mine)) clearConflict(key, field)
+            else if (!sameValue(column, after, before)) markConflict(key, field, after)
+          }
+          for (const column of columns) {
+            if (!column.dependsOn.length || conflicts.get(key)?.has(column.field)) continue
+            const edited = !sameValue(column, (current as R)[column.field], (base as R)[column.field])
+            const moved = column.dependsOn.some(dep => !sameData((base as R)[dep], (theirs as R)[dep]))
+            if (edited && moved) markConflict(key, column.field, (theirs as R)[column.field])
+          }
+          rows.set(key, merged)
+        }
+        baseline.set(key, theirs)
+        touch(key, 'all')
+      }
+      for (const key of baseline.keys()) {
+        if (incoming.has(key) || created.has(key)) continue
+        removed.add(key)
+      }
+      for (const key of removed) {
+        rows.delete(key); baseline.delete(key); deleted.delete(key); changed.delete(key)
+        invalid.delete(key); conflicts.delete(key); saveErrors.delete(key)
+      }
+    })
+    // Natural order follows the source; unsaved new rows stay after the row they followed.
+    const anchors = new Map<RowKey, RowKey[]>()
+    let previous: RowKey | null = null
+    const leading: RowKey[] = []
+    for (const key of order) {
+      if (created.has(key) && !baseline.has(key)) {
+        if (previous === null) leading.push(key)
+        else anchors.set(previous, [...(anchors.get(previous) ?? []), key])
+      } else previous = key
+    }
+    const nextOrder = [...leading]
+    for (const key of sourceOrder) {
+      if (!rows.has(key)) continue
+      nextOrder.push(key, ...(anchors.get(key) ?? []))
+    }
+    for (const [anchor, keys] of anchors) if (!incoming.has(anchor)) nextOrder.push(...keys)
+    order = nextOrder
+    // Keep the rows the user is looking at where they are; new rows join the end of the view.
+    const passes = viewPredicate()
+    if (!passes && !sort.length) view = [...order]
+    else {
+      const shown = new Set(view)
+      view = view.filter(key => rows.has(key))
+      for (const key of order) if (!shown.has(key) && (!passes || passes(rows.get(key)!))) view.push(key)
+    }
+    viewIndex = null
+    if (removed.size) {
+      // History must not resurrect rows the source no longer has.
+      const keep = (ops: Op<Row>[]) => ops.filter(op => op.t === 'set' ? !removed.has(op.key) : op.entries.every(entry => !removed.has(entry.key)))
+      undoStack = undoStack.map(keep).filter(ops => ops.length)
+      redoStack = redoStack.map(keep).filter(ops => ops.length)
+    }
+    emit()
+  }
+
+  /** Settle a conflict: keep the unsaved value, or take the source's value (undoable). */
+  function resolveConflict(key: RowKey, field: string, choice: 'mine' | 'theirs') {
+    const theirs = conflicts.get(key)?.get(field)
+    if (!conflicts.get(key)?.has(field)) return
+    if (choice === 'theirs') run('history', () => { write(key, field, theirs) })
+    clearConflict(key, field)
+    emit()
+  }
+
+  /** Settle every conflict in the target cells. Returns how many were settled. */
+  function resolveConflicts(target: CellTarget, choice: 'mine' | 'theirs') {
+    const found: { key: RowKey; field: string }[] = []
+    forEachCell(target, (key, column) => { if (conflicts.get(key)?.has(column.field)) found.push({ key, field: column.field }) })
+    if (!found.length) return 0
+    if (choice === 'theirs') run('history', () => { for (const { key, field } of found) write(key, field, conflicts.get(key)?.get(field)) })
+    for (const { key, field } of found) clearConflict(key, field)
+    emit()
+    return found.length
   }
 
   // ---- history ------------------------------------------------------------
@@ -795,7 +1032,7 @@ export function createTable<Row>(options: TableOptions<Row>) {
   function getChanges(): TableChanges<Row> {
     const updated: TableChanges<Row>['updated'] = []
     for (const [key, fields] of changed) {
-      if (fields.size) updated.push({ id: getId(baseline.get(key)!), row: rows.get(key)!, changed: [...fields] as FieldKey<Row>[] })
+      if (fields.size) updated.push({ id: getId(baseline.get(key)!), row: rows.get(key)!, original: baseline.get(key)!, changed: [...fields] as FieldKey<Row>[] })
     }
     return {
       created: [...created].map(key => rows.get(key)!),
@@ -810,9 +1047,13 @@ export function createTable<Row>(options: TableOptions<Row>) {
       saveQueued = true
       return saving
     }
-    if (!onSave) return Promise.resolve({ status: 'failed', error: 'No onSave handler.' })
+    if (!onSave) return Promise.resolve({ status: 'failed', error: messages.errors.noSaveHandler })
+    // The open editor's value is part of what the user is saving.
+    if (ui && !ui.commitEdit()) return Promise.resolve({ status: 'editing' })
     const invalidCells = [...invalid.values()].reduce((sum, errors) => sum + errors.size, 0)
     if (invalidCells) return Promise.resolve({ status: 'invalid', cells: invalidCells })
+    const conflictCells = [...conflicts.values()].reduce((sum, cells) => sum + cells.size, 0)
+    if (conflictCells) return Promise.resolve({ status: 'conflict', cells: conflictCells })
     const changes = getChanges()
     if (!changes.created.length && !changes.updated.length && !changes.deleted.length) return Promise.resolve({ status: 'nothing-to-save' })
 
@@ -820,6 +1061,7 @@ export function createTable<Row>(options: TableOptions<Row>) {
     const sentCreated = [...created].map(key => ({ key, row: rows.get(key)! }))
     const sentUpdated = [...changed.keys()].filter(key => changed.get(key)!.size).map(key => ({ key, row: rows.get(key)! }))
     const sentDeleted = [...deleted.keys()]
+    for (const { key } of [...sentCreated, ...sentUpdated]) inFlight.add(key)
     const handler = onSave
     saveError = undefined
     const attempt = (async (): Promise<SaveOutcome> => {
@@ -834,6 +1076,8 @@ export function createTable<Row>(options: TableOptions<Row>) {
       return settle(result ?? {}, sentCreated, sentUpdated, sentDeleted)
     })()
     const current = attempt.finally(() => {
+      inFlight.clear()
+      sourceDuringSave.clear()
       saving = null
       emit()
       if (saveQueued) {
@@ -868,8 +1112,17 @@ export function createTable<Row>(options: TableOptions<Row>) {
       sentCreated.forEach(({ key, row }, index) => {
         if (failed.has(key)) return
         const server = result.created?.[index]
-        accept(key, row, server)
         const id = getId(server ?? row)
+        // The source may have delivered the new row under its server id while the save was
+        // running; fold that copy into this row instead of showing it twice.
+        if (id !== undefined && id !== key && !created.has(id) && baseline.has(id)) {
+          sourceDuringSave.set(key, baseline.get(id)!)
+          rows.delete(id); baseline.delete(id); changed.delete(id); invalid.delete(id); conflicts.delete(id)
+          order = order.filter(entry => entry !== id)
+          view = view.filter(entry => entry !== id)
+          viewIndex = null
+        }
+        accept(key, row, server)
         if (id !== undefined && id !== key) idAlias.set(id, key)
         if (rows.has(key)) created.delete(key)
         // Deleted while the save ran: it now exists on the server, so delete it there next time.
@@ -893,6 +1146,17 @@ export function createTable<Row>(options: TableOptions<Row>) {
 
   /** `sent` was saved; `server` is the server's version of it, if returned. */
   function accept(key: RowKey, sent: Row, server: Row | undefined) {
+    // The source may already have delivered the saved row while the save was running.
+    const delivered = sourceDuringSave.get(key)
+    if (!server && !delivered) awaitingSource.add(key)
+    if (delivered && !server) {
+      baseline.set(key, delivered)
+      // Unedited since sending: show the source's version (e.g. with its id and derived fields).
+      if (rows.get(key) === sent) rows.set(key, delivered)
+      if (rows.has(key)) touch(key, 'all')
+      changed.delete(key)
+      return
+    }
     const saved = server ?? sent
     baseline.set(key, saved)
     const current = rows.get(key)
@@ -916,10 +1180,14 @@ export function createTable<Row>(options: TableOptions<Row>) {
   // ---- reading ------------------------------------------------------------
 
   function cell(key: RowKey, field: string): CellState {
+    const row = rows.get(key)
+    const column = columnByField.get(field)
+    const cellConflicts = conflicts.get(key)
     return {
-      value: (rows.get(key) as R | undefined)?.[field] ?? null,
-      changed: created.has(key) || (changed.get(key)?.has(field) ?? false),
+      value: (row === undefined ? null : column ? column.get(row) : (row as R)[field]) ?? null,
+      changed: !column?.computed && (created.has(key) || (changed.get(key)?.has(field) ?? false)),
       error: invalid.get(key)?.get(field) ?? undefined,
+      conflict: cellConflicts?.has(field) ? { theirs: cellConflicts.get(field) } : undefined,
     }
   }
 
@@ -928,11 +1196,15 @@ export function createTable<Row>(options: TableOptions<Row>) {
     for (const errors of invalid.values()) invalidCells += errors.size
     let changedRows = created.size + deleted.size
     for (const fields of changed.values()) if (fields.size) changedRows++
+    let conflictCells = 0
+    for (const cells of conflicts.values()) conflictCells += cells.size
     return {
       canUndo: undoStack.length > 0,
       canRedo: redoStack.length > 0,
       changedRows,
       invalidCells,
+      conflictCells,
+      editing: ui?.isEditing() ?? false,
       saving: saving !== null,
       saveError,
     }
@@ -964,11 +1236,18 @@ export function createTable<Row>(options: TableOptions<Row>) {
     isNewRow: (key: RowKey) => created.has(key),
     isRowChanged: (key: RowKey) => created.has(key) || (changed.get(key)?.size ?? 0) > 0,
     getRowSaveError: (key: RowKey) => saveErrors.get(key),
+    /** Fields of a row in conflict with the source (empty when none). */
+    getRowConflicts: (key: RowKey): string[] => [...(conflicts.get(key)?.keys() ?? [])],
     getChanges,
     getStatus: status,
-    getView: () => ({ filters, sort, search }),
+    getView: () => ({ filters, sort, search, rowFilter }),
     canEdit: (key: RowKey, field: string) => editable(key, field) === undefined,
+    canDeleteRow: canDelete,
     isReadOnly: () => readOnly,
+    canInsertRows: () => !readOnly && canInsertRows,
+    getMessages: () => messages,
+    /** Column position by field or computed key; -1 when absent. */
+    getColumnIndex: (field: string) => columns.findIndex(column => column.field === field),
     // editing
     parseCell,
     setCell,
@@ -986,24 +1265,50 @@ export function createTable<Row>(options: TableOptions<Row>) {
     insertRow,
     duplicateRows,
     deleteRows,
+    discardChanges,
+    resolveConflict,
+    resolveConflicts,
     undo,
     redo,
     // view
     setFilters: (next: readonly Filter[]) => setView({ filters: next }),
     setSort: (next: readonly Sort[]) => setView({ sort: next }),
     setSearch: (next: string) => setView({ search: next }),
+    /** Show only rows the predicate accepts (in addition to filters and search); null removes it. */
+    setRowFilter: (next: ((row: Row) => boolean) | null) => setView({ rowFilter: next }),
     /** Re-apply filter and sort to edited rows. */
     refreshView: () => setView({}),
     // data
     setData,
+    syncData,
     setColumns,
     save,
+    // grid connection
+    /** Commit the grid's open editor. False when its value cannot be committed (it stays open). */
+    commitEdit: () => ui?.commitEdit() ?? true,
+    isEditing: () => ui?.isEditing() ?? false,
+    /** Select cells in the grid. */
+    select: (target: CellTarget) => ui?.select(target),
+    /** Used by the grid component; returns a function that disconnects it. */
+    attachUI(next: TableUI) {
+      ui = next
+      return () => { if (ui === next) ui = null }
+    },
+    /** Tell subscribers that grid-side state (such as the open editor) changed. */
+    notify: emit,
     /** Update options that may change between renders. */
-    configure(next: Pick<TableOptions<Row>, 'onSave' | 'autoSave' | 'readOnly' | 'createRow'>) {
+    configure(next: Pick<TableOptions<Row>, 'onSave' | 'autoSave' | 'readOnly' | 'createRow' | 'messages' | 'canDeleteRow' | 'duplicateRow' | 'searchText' | 'canInsertRows'>) {
       onSave = next.onSave
       autoSave = next.autoSave
       createRowValues = next.createRow ?? (() => ({}))
-      if ((next.readOnly ?? false) !== readOnly) {
+      canDeleteRow = next.canDeleteRow
+      duplicateRowValues = next.duplicateRow
+      searchText = next.searchText
+      canInsertRows = next.canInsertRows ?? true
+      const nextMessages = resolveMessages(next.messages)
+      const relabel = nextMessages !== messages
+      messages = nextMessages
+      if ((next.readOnly ?? false) !== readOnly || relabel) {
         readOnly = next.readOnly ?? false
         emit()
       }
@@ -1013,6 +1318,16 @@ export function createTable<Row>(options: TableOptions<Row>) {
       listeners.clear()
     },
   }
+}
+
+/** Structural equality for plain data (objects, arrays, primitives). */
+function sameData(a: unknown, b: unknown): boolean {
+  if (Object.is(a, b)) return true
+  if (typeof a !== 'object' || typeof b !== 'object' || a === null || b === null) return false
+  if (Array.isArray(a) !== Array.isArray(b)) return false
+  const keysA = Object.keys(a), keysB = Object.keys(b)
+  if (keysA.length !== keysB.length) return false
+  return keysA.every(key => sameData((a as Record<string, unknown>)[key], (b as Record<string, unknown>)[key]))
 }
 
 const optionKeys = new WeakMap<object, string>()

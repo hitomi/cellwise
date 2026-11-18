@@ -4,6 +4,7 @@ import type { ResolvedColumn } from '../core/columns.js'
 import { isParseError, type BulkInput } from '../core/field-type.js'
 import type { BulkEdit, CellError, CellRange, EditResult, Table } from '../core/table.js'
 import { isBuiltin, shortcut } from './cells.js'
+import { useMessages } from './messages-context.js'
 
 interface BulkEditorProps {
   table: Table<any>
@@ -11,10 +12,15 @@ interface BulkEditorProps {
   onClose(result?: EditResult): void
 }
 
+/** Marks an input that still needs a value. */
+const REQUIRED = 'required'
+
 type Draft = { operation: string; args: Record<string, unknown>; invalid: Record<string, string> }
 
 /** Dialog that applies one bulk operation per column to every selected cell. */
 export function BulkEditor({ table, ranges, onClose }: BulkEditorProps) {
+  const messages = table.getMessages()
+  const m = messages.ui
   const columns = table.getColumns()
   // Columns in the selection, with how many selected cells each has.
   const targets = useMemo(() => {
@@ -53,7 +59,7 @@ export function BulkEditor({ table, ranges, onClose }: BulkEditorProps) {
           if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); apply() }
         }}>
         <h2 id="cw-bulk-title" className="cw-modal-title">
-          Edit {cellTotal(targets).toLocaleString()} selected cells
+          {m.bulkTitle(cellTotal(targets))}
         </h2>
         <div className="cw-bulk-rows">
           {targets.map(({ column, count }) => {
@@ -63,16 +69,17 @@ export function BulkEditor({ table, ranges, onClose }: BulkEditorProps) {
               <div className="cw-bulk-row" key={column.field}>
                 <div className="cw-bulk-column">
                   <span className="cw-bulk-title">{column.title}</span>
-                  <span className="cw-hint">{count.toLocaleString()} {count === 1 ? 'cell' : 'cells'}</span>
+                  <span className="cw-hint">{m.cellCount(count)}</span>
                 </div>
-                <select className="cw-select" aria-label={`${column.title} operation`} value={draft.operation}
+                <select className="cw-select" aria-label={column.title} value={draft.operation}
                   onChange={event => update(column.field, initialDraft(column, event.target.value))}>
-                  <option value="keep">Keep unchanged</option>
-                  {Object.entries(column.type.bulk).map(([name, entry]) => <option key={name} value={name}>{entry.label}</option>)}
+                  <option value="keep">{m.keepUnchanged}</option>
+                  {Object.entries(column.type.bulk).map(([name, entry]) => <option key={name} value={name}>{name === 'set' || name === 'clear' ? messages.bulk[name] : entry.label}</option>)}
                 </select>
                 <div className="cw-bulk-inputs">
                   {operation?.inputs?.map(input => (
                     <BulkInputField key={`${draft.operation}:${input.name}`} column={column} input={input} value={draft.args[input.name]}
+                      operationLabel={draft.operation === 'set' || draft.operation === 'clear' ? messages.bulk[draft.operation] : operation.label}
                       error={draft.invalid[input.name]}
                       onChange={(value, error) => {
                         const invalid = { ...draft.invalid }
@@ -87,16 +94,16 @@ export function BulkEditor({ table, ranges, onClose }: BulkEditorProps) {
           })}
         </div>
         <div className="cw-bulk-preview" role="status">
-          {!edits.length ? 'Choose what to change.'
-            : invalidInputs ? 'Fix the highlighted inputs.'
+          {!edits.length ? m.chooseWhat
+            : invalidInputs ? m.fixInputs
               : <PlanSummary changes={plan.changes} unchanged={plan.unchanged} errors={plan.errors} />}
         </div>
         <div className="cw-modal-actions">
-          <span className="cw-hint">{shortcut('Enter')} to apply · undo with {shortcut('Z')}</span>
+          <span className="cw-hint">{m.applyHint(shortcut('Enter'), shortcut('Z'))}</span>
           <span className="cw-spacer" />
-          <button type="button" className="cw-button" onClick={() => onClose()}>Cancel</button>
+          <button type="button" className="cw-button" onClick={() => onClose()}>{m.cancel}</button>
           <button type="button" className="cw-button cw-primary" disabled={!canApply} onClick={apply}>
-            {plan.changes && !invalidInputs ? `Change ${plan.changes.toLocaleString()} ${plan.changes === 1 ? 'cell' : 'cells'}` : 'Apply'}
+            {plan.changes && !invalidInputs ? m.changeCells(plan.changes) : m.apply}
           </button>
         </div>
       </div>
@@ -111,7 +118,7 @@ function initialDraft(column: ResolvedColumn, operation: string): Draft {
   for (const input of column.type.bulk[operation]?.inputs ?? []) {
     if (input.kind === 'boolean' || (input.kind === 'value' && isBuiltin(column, 'checkbox'))) args[input.name] = false
     else if (input.kind === 'values' || (input.kind === 'value' && isBuiltin(column, 'multiSelect'))) args[input.name] = []
-    else if (input.kind !== 'text') invalid[input.name] = 'Required'
+    else if (input.kind !== 'text') invalid[input.name] = REQUIRED
   }
   return { operation, args, invalid }
 }
@@ -121,15 +128,16 @@ function cellTotal(targets: { count: number }[]) {
 }
 
 function PlanSummary({ changes, unchanged, errors }: { changes: number; unchanged: number; errors: CellError[] }) {
+  const m = useMessages().ui
   // Group skipped cells by reason.
   const reasons = new Map<string, number>()
   for (const error of errors) reasons.set(error.message, (reasons.get(error.message) ?? 0) + 1)
   return (
     <>
-      <strong>{changes.toLocaleString()}</strong> {changes === 1 ? 'cell' : 'cells'} will change
-      {unchanged > 0 && <> · {unchanged.toLocaleString()} already match</>}
+      <strong>{m.willChange(changes)}</strong>
+      {unchanged > 0 && <> · {m.alreadyMatch(unchanged)}</>}
       {[...reasons].slice(0, 3).map(([reason, count]) => (
-        <span key={reason} className="cw-bulk-skipped"> · {count.toLocaleString()} skipped: {reason}</span>
+        <span key={reason} className="cw-bulk-skipped"> · {m.skippedReason(count, reason)}</span>
       ))}
     </>
   )
@@ -141,26 +149,29 @@ function optionList(column: ResolvedColumn): readonly SelectOption[] | undefined
 const optionValue = (option: SelectOption) => typeof option === 'string' ? option : option.value
 const optionLabel = (option: SelectOption) => typeof option === 'string' ? option : option.label ?? option.value
 
-function BulkInputField({ column, input, value, error, onChange }: {
+function BulkInputField({ column, input, value, error, onChange, operationLabel }: {
   column: ResolvedColumn
+  /** Names an input that has no label of its own, e.g. "Set to". */
+  operationLabel: string
   input: BulkInput
   value: unknown
   error: string | undefined
   onChange(value: unknown, error?: string): void
 }) {
+  const m = useMessages().ui
   const label = input.label
   const options = optionList(column)
-  const wrap = (control: React.ReactNode) => label ? <label className="cw-bulk-input">{label}{control}</label> : control
+  const wrap = (control: React.ReactNode) => label ? <label className="cw-bulk-input">{label}{control}</label> : <label className="cw-bulk-input" aria-label={operationLabel}>{control}</label>
 
   if (input.kind === 'boolean' || (input.kind === 'value' && isBuiltin(column, 'checkbox'))) {
     return <label className="cw-bulk-input cw-bulk-check">
       <input type="checkbox" checked={value === true} onChange={event => onChange(event.target.checked)} />
-      {label ?? (value === true ? 'Checked' : 'Unchecked')}
+      {label ?? (value === true ? m.checked : m.unchecked)}
     </label>
   }
   if (input.kind === 'choice') {
-    return wrap(<select className="cw-select" value={String(value ?? '')} onChange={event => onChange(event.target.value || undefined, event.target.value ? undefined : 'Required')}>
-      <option value="">Choose…</option>
+    return wrap(<select className="cw-select" value={String(value ?? '')} onChange={event => onChange(event.target.value || undefined, event.target.value ? undefined : REQUIRED)}>
+      <option value="">{m.chooseOption}</option>
       {input.choices?.map(choice => <option key={choice.value} value={choice.value}>{choice.label}</option>)}
     </select>)
   }
@@ -168,7 +179,7 @@ function BulkInputField({ column, input, value, error, onChange }: {
   if (options && (input.kind === 'values' || (input.kind === 'value' && isBuiltin(column, 'multiSelect')))) {
     const selected = Array.isArray(value) ? value as string[] : []
     return (
-      <div className="cw-chips" role="group" aria-label={label ?? 'Options'}>
+      <div className="cw-chips" role="group" aria-label={label ?? m.options}>
         {options.map(option => {
           const on = selected.includes(optionValue(option))
           return (
@@ -187,7 +198,7 @@ function BulkInputField({ column, input, value, error, onChange }: {
   }
   if (options && input.kind === 'value') {
     return wrap(<select className="cw-select" value={String(value ?? '')} onChange={event => onChange(event.target.value || null)}>
-      <option value="">(empty)</option>
+      <option value="">{m.emptyValue}</option>
       {options.map(option => <option key={optionValue(option)} value={optionValue(option)}>{optionLabel(option)}</option>)}
     </select>)
   }
@@ -196,7 +207,7 @@ function BulkInputField({ column, input, value, error, onChange }: {
       defaultValue={typeof value === 'number' ? value : ''}
       onChange={event => {
         const text = event.target.value
-        onChange(text === '' ? undefined : Number(text), text === '' ? 'Required' : undefined)
+        onChange(text === '' ? undefined : Number(text), text === '' ? REQUIRED : undefined)
       }} />)
   }
   if (input.kind === 'text') {
@@ -205,7 +216,7 @@ function BulkInputField({ column, input, value, error, onChange }: {
   }
   // A value of the column's own type, typed as text and parsed by the type.
   return wrap(
-    <input className="cw-input-small" placeholder={isBuiltin(column, 'date') ? 'YYYY-MM-DD' : 'New value'} title={error}
+    <input className="cw-input-small" placeholder={isBuiltin(column, 'date') ? 'YYYY-MM-DD' : m.newValue} title={error}
       data-invalid={error ? true : undefined}
       onChange={event => {
         const parsed = column.type.parse(event.target.value, column.options)
