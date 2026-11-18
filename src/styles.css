@@ -449,3 +449,8 @@
   .cw-original-label { color: var(--cw-muted); }
   .cw-original-value { display: inline-flex; align-items: center; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 }
+
+@layer cellwise {
+  .cw-icon { display: inline-flex; align-items: center; justify-content: center; }
+  .cw-icon-svg { display: block; flex: none; }
+}

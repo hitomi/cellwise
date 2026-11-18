@@ -191,8 +191,8 @@ function Toolbar({ table, grid, options, save, selection, onBulkEdit }: {
       )}
       {show('undo') && (
         <>
-          <button type="button" className="cw-button cw-icon" onClick={() => table.undo()} disabled={!status.canUndo} title={`${m.undo} (${shortcut('Z')})`} aria-label={m.undo}>↶</button>
-          <button type="button" className="cw-button cw-icon" onClick={() => table.redo()} disabled={!status.canRedo} title={`${m.redo} (${shortcut('Shift+Z')})`} aria-label={m.redo}>↷</button>
+          <button type="button" className="cw-button cw-icon" onClick={() => table.undo()} disabled={!status.canUndo} title={`${m.undo} (${shortcut('Z')})`} aria-label={m.undo}><UndoIcon /></button>
+          <button type="button" className="cw-button cw-icon" onClick={() => table.redo()} disabled={!status.canRedo} title={`${m.redo} (${shortcut('Shift+Z')})`} aria-label={m.redo}><UndoIcon redo /></button>
         </>
       )}
       {options.start}
@@ -214,6 +214,17 @@ function Toolbar({ table, grid, options, save, selection, onBulkEdit }: {
         </button>
       )}
     </div>
+  )
+}
+
+/** Curved-arrow undo/redo icon (shapes after Lucide's undo-2/redo-2, ISC license). */
+function UndoIcon({ redo }: { redo?: boolean }) {
+  return (
+    <svg className="cw-icon-svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+      strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={redo ? { transform: 'scaleX(-1)' } : undefined}>
+      <path d="M9 14 4 9l5-5" />
+      <path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11" />
+    </svg>
   )
 }
 
