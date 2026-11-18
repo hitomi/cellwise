@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { ResolvedColumn } from '../core/columns.js'
-import type { QuickAction } from '../core/field-type.js'
+import { acceptsFile, isParseError, type QuickAction } from '../core/field-type.js'
 import type { CellRange, EditResult, RowKey, Table } from '../core/table.js'
 import { cellAlign, editorFor, isBuiltin, renderCell, shortcut } from './cells.js'
 import { useTableVersion } from './use-data-table.js'
@@ -51,7 +51,13 @@ export function Grid({ table, rowHeight, onNotice, onSelectionChange, onBulkEdit
   const [selections, setSelections] = useState<Selection[]>([{ anchor: { r: 0, c: 0 }, focus: { r: 0, c: 0 } }])
   const setSelection = (next: Selection) => setSelections([next])
   const setLastSelection = (next: Selection) => setSelections(list => [...list.slice(0, -1), next])
-  const [editing, setEditing] = useState<Editing | null>(null)
+  const [editing, setEditingState] = useState<Editing | null>(null)
+  // The open edit session, read by commits that arrive late (e.g. an editor's blur after it closed).
+  const editingRef = useRef<Editing | null>(null)
+  const setEditing = (next: Editing | null) => { editingRef.current = next; setEditingState(next) }
+  const [dropCell, setDropCell] = useState<Pos | null>(null)
+  const [uploads, setUploads] = useState<{ id: number; key: RowKey; field: string }[]>([])
+  const uploadId = useRef(0)
   const [fillTarget, setFillTarget] = useState<CellRange | null>(null)
   const [menu, setMenu] = useState<Menu | null>(null)
   const editId = useRef(0)
@@ -207,6 +213,7 @@ export function Grid({ table, rowHeight, onNotice, onSelectionChange, onBulkEdit
   }, [multiEdit])
 
   function finishEditing(id: number, value?: unknown, commit = false) {
+    const editing = editingRef.current
     if (!editing || editing.id !== id) return
     setEditing(null)
     if (commit) {
@@ -325,7 +332,47 @@ export function Grid({ table, rowHeight, onNotice, onSelectionChange, onBulkEdit
 
   function onPaste(event: React.ClipboardEvent) {
     event.preventDefault()
+    // Pasted files (e.g. a copied image) go to a cell whose type accepts them.
+    const key = table.getRowKey(sel.anchor.r)
+    const column = columns[sel.anchor.c]
+    const files = [...event.clipboardData.files]
+    if (files.length && key !== undefined && column?.type.files) { receiveFiles(key, column, files); return }
     pasteText(event.clipboardData.getData('text/plain'))
+  }
+
+  // ---- files --------------------------------------------------------------
+
+  /** The cell under a file drag, if its type accepts the dragged files. */
+  function fileDropTarget(event: React.DragEvent) {
+    if (![...event.dataTransfer.types].includes('Files')) return null
+    const pos = posAt(event.clientX, event.clientY)
+    const column = pos && columns[pos.c]
+    const handler = column?.type.files
+    const key = pos ? table.getRowKey(pos.r) : undefined
+    if (!pos || !column || !handler || key === undefined || !table.canEdit(key, column.field)) return null
+    // During a drag only MIME types are visible; an empty type list is allowed and checked on drop.
+    const items = [...event.dataTransfer.items].filter(item => item.kind === 'file')
+    if (items.length && !items.some(item => !item.type || acceptsFile(handler.accept, item.type))) return null
+    return { pos, column, key }
+  }
+
+  function receiveFiles(key: RowKey, column: ResolvedColumn, files: File[]) {
+    const handler = column.type.files
+    if (!handler) return
+    const accepted = files.filter(file => acceptsFile(handler.accept, file.type, file.name))
+    if (!accepted.length) { onNotice(`${column.title} does not accept these files`); return }
+    if (!table.canEdit(key, column.field)) { onNotice('This cell is read-only'); return }
+    const id = ++uploadId.current
+    setUploads(current => [...current, { id, key, field: column.field }])
+    handler.receive(accepted, column.options)
+      .then(apply => {
+        // Apply to the cell as it is now, not as it was when the upload started.
+        const current = table.getCell(key, column.field).value
+        const next = apply(column.type.isEmpty(current) ? null : current)
+        if (isParseError(next)) onNotice(`${column.title}: ${next.error}`)
+        else report(table.setCell(key, column.field, next), 'Upload')
+      }, failure => onNotice(`Upload failed: ${failure instanceof Error ? failure.message : String(failure)}`))
+      .finally(() => setUploads(current => current.filter(entry => entry.id !== id)))
   }
 
   // ---- pointer ----------------------------------------------------------
@@ -573,7 +620,14 @@ export function Grid({ table, rowHeight, onNotice, onSelectionChange, onBulkEdit
   }
 
   return (
-    <div className="cw-grid" onKeyDown={onKeyDown}>
+    <div className="cw-grid" onKeyDown={onKeyDown}
+      // A file dropped anywhere else in the grid must not make the browser open it and leave the page.
+      onDragOver={event => {
+        if (event.defaultPrevented || ![...event.dataTransfer.types].includes('Files')) return
+        event.preventDefault()
+        event.dataTransfer.dropEffect = 'none'
+      }}
+      onDrop={event => { if ([...event.dataTransfer.types].includes('Files')) event.preventDefault() }}>
       <div className="cw-scroller" ref={scroller} onScroll={onScroll}>
         <div className="cw-canvas" style={{ width: GUTTER + totalWidth, height: HEADER_HEIGHT + bodyHeight }}>
           <div className="cw-header" style={{ height: HEADER_HEIGHT, width: GUTTER + totalWidth }}>
@@ -601,6 +655,25 @@ export function Grid({ table, rowHeight, onNotice, onSelectionChange, onBulkEdit
             })}
           </div>
           <div className="cw-body" style={{ height: bodyHeight }} onMouseDown={onBodyMouseDown}
+            onDragOver={event => {
+              if ((event.target as HTMLElement).closest('.cw-editor')) return
+              const target = fileDropTarget(event)
+              if (!target) { setDropCell(null); return }
+              event.preventDefault()
+              event.dataTransfer.dropEffect = 'copy'
+              if (dropCell?.r !== target.pos.r || dropCell?.c !== target.pos.c) setDropCell(target.pos)
+            }}
+            onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setDropCell(null) }}
+            onDrop={event => {
+              if ((event.target as HTMLElement).closest('.cw-editor')) return
+              const target = fileDropTarget(event)
+              setDropCell(null)
+              if (!target) return
+              event.preventDefault()
+              select({ anchor: target.pos, focus: target.pos }, false)
+              focusGrid()
+              receiveFiles(target.key, target.column, [...event.dataTransfer.files])
+            }}
             onDoubleClick={event => { const pos = posAt(event.clientX, event.clientY); if (pos && !editing) startEditing(pos) }}
             onContextMenu={event => {
               if ((event.target as HTMLElement).closest('.cw-editor')) return
@@ -619,6 +692,13 @@ export function Grid({ table, rowHeight, onNotice, onSelectionChange, onBulkEdit
                 onMouseDown={startFill} title="Drag to fill" />
             )}
             {fillTarget && <div className="cw-fill-preview" style={rect(fillTarget)} />}
+            {dropCell && <div className="cw-drop-target" style={rect({ rowStart: dropCell.r, rowEnd: dropCell.r, colStart: dropCell.c, colEnd: dropCell.c })}><span>Drop to upload</span></div>}
+            {uploads.map(upload => {
+              const r = table.getRowIndex(upload.key)
+              const c = columns.findIndex(column => column.field === upload.field)
+              if (r === undefined || c < 0) return null
+              return <div key={upload.id} className="cw-cell-busy" style={rect({ rowStart: r, rowEnd: r, colStart: c, colEnd: c })}><span className="cw-spinner" aria-label="Uploading" /></div>
+            })}
             {editing && Editor && editingColumn && editingRect && (
               <div className="cw-editor" style={{ left: editingRect.left, top: editingRect.top, minWidth: editingRect.width, minHeight: editingRect.height }}
                 onKeyDownCapture={event => {

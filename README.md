@@ -7,6 +7,7 @@ A spreadsheet-like table editor for React, built around **editing many cells at 
 - **Multi-cell editing:** select any cells, including separate ranges with ⌘/Ctrl+click, type a value and press ⌘/Ctrl+Enter to apply it to all of them.
 - **Bulk edit panel (⌘/Ctrl+E):** per-column operations such as find and replace, prefix and suffix, increase by, add or remove tags and shift dates, with a live preview before applying.
 - **Quick edit from the context menu:** set an option, check, uncheck or toggle, ±1, today, change case and more, applied to the whole selection.
+- **Image cells:** one image or a gallery per cell. Drop or paste images straight onto a cell, or use the editor (file picker, drag and drop, URL).
 - **Spreadsheet basics:** keyboard navigation, copy and paste with Excel and Google Sheets, drag-to-fill, undo and redo, filter, sort and search.
 - **Fast:** rows and columns are virtualized. A cell edit takes microseconds on 100k rows, no matter how long the history is.
 - **Typed:** columns are checked against your row type, so a wrong field or wrong options are compile errors.
@@ -58,6 +59,22 @@ onSave={async ({ created, updated, deleted }) => {
 
 If the save throws, every change is kept so it can be retried. Edits made while a save is in
 flight stay unsaved. Invalid cells block saving.
+
+## Image cells
+
+```tsx
+import { createImageType } from 'cellwise'
+
+// `upload` returns the stored file's URL, e.g. after uploading to S3. Without it, images are kept as data URLs.
+const photo = createImageType({ upload })                                // field: string
+const gallery = createImageType({ multiple: true, maxCount: 6, upload }) // field: string[]
+
+columns={[{ field: 'photo', type: photo }, { field: 'gallery', type: gallery }]}
+```
+
+Drop image files onto a cell, or paste one with ⌘/Ctrl+V. A single image is replaced; a gallery
+appends as many as fit. Enter opens the editor, where you can add, remove, drop, paste or enter URLs.
+Any field type can accept files through the `files` option of `defineFieldType`.
 
 ## Custom field types
 

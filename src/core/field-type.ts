@@ -43,6 +43,27 @@ export interface QuickAction<V, O> {
   isActive?(value: V | null, options: O): boolean
 }
 
+/** Lets files be dropped onto (or pasted into) a cell, e.g. image uploads. */
+export interface FileHandler<V, O> {
+  /** Accepted file types, like the `accept` attribute: `'image/*'`, `'.pdf,application/pdf'`. */
+  accept: string
+  /**
+   * Upload or read the files, then return how to apply them to the cell. The returned
+   * function receives the cell's value at the time the upload finishes.
+   */
+  receive(files: File[], options: O): Promise<(value: V | null) => ParseResult<V>>
+}
+
+/** Whether a file (or a drag item's MIME type) matches an `accept` list. */
+export function acceptsFile(accept: string, type: string, name = '') {
+  return accept.split(',').map(entry => entry.trim().toLowerCase()).some(pattern => {
+    if (!pattern) return false
+    if (pattern.startsWith('.')) return name.toLowerCase().endsWith(pattern)
+    if (pattern.endsWith('/*')) return type.toLowerCase().startsWith(pattern.slice(0, -1))
+    return type.toLowerCase() === pattern
+  })
+}
+
 export interface CellProps<V, O> {
   value: V | null
   options: O
@@ -78,6 +99,8 @@ export interface FieldTypeSpec<V, O = {}> {
   bulk?: Record<string, BulkOperation<V, O>>
   /** Context-menu shortcuts for the column's selected cells. */
   quickActions?(options: O): readonly QuickAction<V, O>[]
+  /** Accept files dropped onto or pasted into the cell. */
+  files?: FileHandler<V, O>
   Cell?: ComponentType<CellProps<V, O>>
   Editor?: ComponentType<EditorProps<V, O>>
 }
@@ -93,6 +116,7 @@ export interface FieldType<V = any, O = any> {
   readonly filters: Readonly<Record<string, FilterOperator<V, O>>>
   readonly bulk: Readonly<Record<string, BulkOperation<V, O>>>
   quickActions(options: O): readonly QuickAction<V, O>[]
+  readonly files: FileHandler<V, O> | undefined
   readonly Cell: ComponentType<CellProps<V, O>> | undefined
   readonly Editor: ComponentType<EditorProps<V, O>> | undefined
   /** Configure the type for one column: `type: rating.with({ max: 5 })`. */
@@ -137,6 +161,7 @@ export function defineFieldType<V, O = {}>(spec: FieldTypeSpec<V, O>): FieldType
     filters: { ...spec.filters, ...commonFilters },
     bulk: { set: setOperation, ...spec.bulk, clear: clearOperation },
     quickActions: spec.quickActions ?? (() => []),
+    files: spec.files,
     Cell: spec.Cell,
     Editor: spec.Editor,
     with: options => ({ type, options }),

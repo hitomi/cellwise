@@ -1,6 +1,6 @@
 import { StrictMode, useMemo, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { DataTable, defineColumns, defineFieldType, type TableChanges } from '../src/index.js'
+import { createImageType, DataTable, defineColumns, defineFieldType, type TableChanges } from '../src/index.js'
 import '../src/styles.css'
 import './demo.css'
 
@@ -44,6 +44,24 @@ const rating = defineFieldType<number, { max: number }>({
   ),
 })
 
+// ---- image cells: one photo, or a gallery of up to 6 ------------------------------
+
+// Stand-in for a real upload (e.g. to S3): waits a moment, then returns a local URL.
+async function fakeUpload(file: File) {
+  await new Promise(resolve => setTimeout(resolve, 800))
+  return URL.createObjectURL(file)
+}
+const photoType = createImageType({ upload: fakeUpload })
+const galleryType = createImageType({ multiple: true, maxCount: 6, upload: fakeUpload })
+
+/** Small generated product pictures, so the demo needs no image hosting. */
+const sampleImages = ['#2563eb', '#7c3aed', '#0d9488', '#d97706', '#db2777', '#16a34a', '#475569', '#dc2626'].flatMap((color, index) =>
+  ['M18 44 32 20l14 24Z', 'M20 20h24v24H20Z', 'M32 18a14 14 0 1 0 0 28 14 14 0 0 0 0-28Z'].map(shape =>
+    'data:image/svg+xml,' + encodeURIComponent(
+      `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" fill="${color}" opacity="0.18"/>`
+      + `<path d="${shape}" fill="${color}" transform="rotate(${index * 15} 32 32)"/></svg>`,
+    )))
+
 // ---- data ----------------------------------------------------------------------
 
 type Product = {
@@ -57,6 +75,8 @@ type Product = {
   active: boolean
   launch: string | null
   rating: number | null
+  photo: string | null
+  gallery: string[]
   notes: string
 }
 
@@ -69,6 +89,7 @@ const categories = [
 const tags = ['new', 'sale', 'bestseller', 'limited', 'eco']
 
 const columns = defineColumns<Product>([
+  { field: 'photo', type: photoType, title: 'Photo', width: 64, sortable: false },
   { field: 'name', type: 'text', title: 'Name', width: 220, required: true },
   { field: 'sku', type: 'text', title: 'SKU', width: 120, readOnly: true },
   { field: 'category', type: 'select', title: 'Category', options: categories, width: 140 },
@@ -78,6 +99,7 @@ const columns = defineColumns<Product>([
   { field: 'active', type: 'checkbox', title: 'Active', width: 80 },
   { field: 'launch', type: 'date', title: 'Launch', width: 130 },
   { field: 'rating', type: rating.with({ max: 5 }), title: 'Rating', width: 130 },
+  { field: 'gallery', type: galleryType, title: 'Gallery (up to 6)', width: 150 },
   { field: 'notes', type: 'text', title: 'Notes', width: 260 },
 ])
 
@@ -101,6 +123,8 @@ function makeRows(count: number): Product[] {
       active,
       launch: random() > 0.1 ? `202${Math.floor(random() * 6)}-${String(1 + Math.floor(random() * 12)).padStart(2, '0')}-${String(1 + Math.floor(random() * 28)).padStart(2, '0')}` : null,
       rating: random() > 0.3 ? 1 + Math.floor(random() * 5) : null,
+      photo: random() > 0.15 ? pick(sampleImages) : null,
+      gallery: sampleImages.filter(() => random() > 0.85).slice(0, 6),
       notes: random() > 0.7 ? 'Check supplier lead time' : '',
     }
   })
@@ -157,7 +181,7 @@ function App() {
           <DataTable
             data={data}
             columns={columns}
-            createRow={() => ({ name: '', sku: '', category: 'hardware', tags: [], price: null, stock: 0, active: true, launch: null, rating: null, notes: '' })}
+            createRow={() => ({ name: '', sku: '', category: 'hardware', tags: [], price: null, stock: 0, active: true, launch: null, rating: null, photo: null, gallery: [], notes: '' })}
             onSave={onSave}
             {...(autoSave ? { autoSave: 1000 } : {})}
           />
@@ -183,6 +207,7 @@ function App() {
             <li>Price must be ≥ 0; Name is required</li>
             <li>Read-only cells are hatched: SKU always (🔒 in the header), Stock when the product is inactive</li>
             <li>Rating is a custom field type: press 1–5 or click stars</li>
+            <li>Photo (one image) and Gallery (up to 6) use <code>createImageType</code>: press Enter to add images by file, drag &amp; drop, paste, or URL</li>
           </ul>
           <h2>onSave calls</h2>
           {!log.length && <p className="muted">Nothing saved yet.</p>}
