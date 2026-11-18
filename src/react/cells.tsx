@@ -165,9 +165,13 @@ function SelectEditor({ value, column, row, initialText, onCommit, onCancel }: I
   const list = useOptionList(column, initialText, options.findIndex(option => (typeof option === 'string' ? option : option.value) === value))
   const done = useRef(false)
   const pick = (picked: string | null) => { done.current = true; onCommit(picked) }
+  const hasValue = value !== null && value !== undefined && value !== ''
   return (
     <div className="cw-dropdown">
-      <input
+      {/* The current value stays visible beside the search box. */}
+      <div className="cw-dropdown-head" onMouseDown={event => { if (event.target !== list.input.current) { event.preventDefault(); list.input.current?.focus() } }}>
+        {hasValue && <span className="cw-dropdown-current"><OptionContent column={column} value={String(value)} row={row} /></span>}
+        <input
         ref={list.input}
         className="cw-input"
         role="combobox"
@@ -189,7 +193,8 @@ function SelectEditor({ value, column, row, initialText, onCommit, onCancel }: I
           }
         }}
         onBlur={() => { if (!done.current) onCancel() }}
-      />
+        />
+      </div>
       <div className="cw-options" role="listbox" id={listId} aria-label={column.title}>
         {value !== null && value !== undefined && !column.required && (
           <div className="cw-option cw-option-clear" onMouseDown={event => { event.preventDefault(); pick(null) }}>{messages.bulk.clear}</div>
@@ -198,6 +203,7 @@ function SelectEditor({ value, column, row, initialText, onCommit, onCancel }: I
           <div key={optionValue} role="option" aria-selected={optionValue === value} aria-label={optionInfo(options, optionValue).label}
             className="cw-option" data-active={index === list.active || undefined}
             onMouseEnter={() => list.setActive(index)} onMouseDown={event => { event.preventDefault(); pick(optionValue) }}>
+            <span className="cw-option-tick" aria-hidden="true">{optionValue === value ? '✓' : ''}</span>
             <OptionContent column={column} value={optionValue} row={row} />
           </div>
         ))}
@@ -235,7 +241,16 @@ function MultiSelectEditor({ value, column, row, initialText, onCommit, onChange
   const createIndex = canCreate ? list.filtered.length : -1
   return (
     <div className="cw-dropdown">
-      <input
+      {/* The selected values stay visible above the list; × removes one. */}
+      <div className="cw-dropdown-head" onMouseDown={event => { if (event.target !== list.input.current) { event.preventDefault(); list.input.current?.focus() } }}>
+        {selected.map(entry => (
+          <span key={entry} className="cw-dropdown-current cw-dropdown-chip">
+            <OptionContent column={column} value={entry} row={row} />
+            <button type="button" tabIndex={-1} className="cw-chip-remove" aria-label={messages.ui.removeOption(optionInfo(options, entry).label)}
+              onMouseDown={event => { event.preventDefault(); event.stopPropagation(); toggle(entry) }}>×</button>
+          </span>
+        ))}
+        <input
         ref={list.input}
         className="cw-input"
         role="combobox"
@@ -260,7 +275,8 @@ function MultiSelectEditor({ value, column, row, initialText, onCommit, onChange
           }
         }}
         onBlur={finish}
-      />
+        />
+      </div>
       <div className="cw-options" role="listbox" id={listId} aria-label={column.title} aria-multiselectable>
         {list.filtered.map((entry, index) => (
           <div key={entry} role="option" aria-selected={selected.includes(entry)} aria-label={optionInfo(options, entry).label}
