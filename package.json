@@ -1,7 +1,6 @@
 {
   "name": "cellwise",
-  "version": "1.0.0-alpha.0",
-  "private": true,
+  "version": "0.1.0",
   "description": "Spreadsheet-like table editor for React, built around editing many cells at once",
   "license": "MIT",
   "homepage": "https://hitomi.github.io/cellwise/",
@@ -44,7 +43,8 @@
     "build:demo": "vite build --config vite.demo.config.ts",
     "check": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run --project unit",
-    "bench": "vitest run --project bench"
+    "bench": "vitest run --project bench",
+    "prepublishOnly": "pnpm check && pnpm test && pnpm build"
   },
   "peerDependencies": {
     "react": "^19.0.0",
@@ -58,5 +58,8 @@
     "typescript": "~7.0.2",
     "vite": "^8.2.1",
     "vitest": "^4.1.10"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }
