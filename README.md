@@ -86,7 +86,7 @@ changes; with a table object call `table.syncData(rows)`.
 ```ts
 { key: 'total', title: 'Total', type: 'number', precision: 2, value: row => row.price * row.quantity }
 { field: 'status', type: 'select', options, render: (value, row) => <StatusPill status={value} /> }
-{ field: 'status', type: 'select', options, clickToEdit: true } // open on any click (by default, the ▾ in the cell opens it)
+{ field: 'status', type: 'select', options, clickToEdit: true } // open on any click (by default, releasing on the ▾ in the cell opens it; a drag from it selects)
 ```
 
 Computed columns are read-only and sort, filter, search and copy like any other column.

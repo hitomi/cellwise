@@ -429,19 +429,25 @@ export function Grid({ table, rowHeight, headerHeight, ariaLabel, loading, onNot
       .finally(() => setUploads(current => current.filter(entry => entry.id !== id)))
   }
 
+  const samePos = (a: Pos | null | undefined, b: Pos) => !!a && a.r === b.r && a.c === b.c
+
   // ---- pointer ----------------------------------------------------------
 
-  function dragSelect(start: Selection, mode: 'cells' | 'rows' | 'columns') {
+  /** `onRelease` learns whether the pointer stayed on the start cell for the whole drag. */
+  function dragSelect(start: Selection, mode: 'cells' | 'rows' | 'columns', onRelease?: (event: MouseEvent, stayed: boolean) => void) {
+    let stayed = true
     const onMove = (event: MouseEvent) => {
       autoScroll(event)
       const pos = posAt(event.clientX, event.clientY, true)
       if (!pos) return
+      if (pos.r !== start.anchor.r || pos.c !== start.anchor.c) stayed = false
       const focus = mode === 'rows' ? { r: pos.r, c: maxCol } : mode === 'columns' ? { r: maxRow, c: pos.c } : pos
       setLastSelection({ anchor: start.anchor, focus })
     }
-    const onUp = () => {
+    const onUp = (event: MouseEvent) => {
       window.removeEventListener('mousemove', onMove)
       window.removeEventListener('mouseup', onUp)
+      onRelease?.(event, stayed)
     }
     window.addEventListener('mousemove', onMove)
     window.addEventListener('mouseup', onUp)
@@ -472,10 +478,15 @@ export function Grid({ table, rowHeight, headerHeight, ariaLabel, loading, onNot
     // Tapping the dot of an edited cell shows its previous value (touch screens have no hover).
     const dot = (event.target as HTMLElement).closest('.cw-dirty-dot')
     setPeek(dot ? pos : null)
-    // The ▾ of a select cell opens its options; the rest of the cell selects as usual.
+    // The ▾ of a select cell opens its options on release, so a drag that starts on it
+    // still selects a range; the rest of the cell selects as usual.
     if ((event.target as HTMLElement).closest('.cw-dropdown-arrow') && !event.shiftKey && !event.metaKey && !event.ctrlKey) {
-      select({ anchor: pos, focus: pos }, false)
-      startEditing(pos)
+      const next = { anchor: pos, focus: pos }
+      setSelection(next)
+      dragSelect(next, 'cells', (up, stayed) => {
+        // Released on this cell's ▾ (looked up afresh: a re-render may replace the node).
+        if (stayed && (up.target as Element | null)?.closest?.('.cw-dropdown-arrow') && samePos(posAt(up.clientX, up.clientY), pos)) startEditing(pos)
+      })
       return
     }
     if ((event.target as HTMLElement).closest('.cw-check') && !event.shiftKey) {
