@@ -195,6 +195,7 @@ function SelectEditor({ value, column, row, initialText, onCommit, onCancel }: I
         onBlur={() => { if (!done.current) onCancel() }}
         />
       </div>
+      <div className="cw-dropdown-popup">
       <div className="cw-options" role="listbox" id={listId} aria-label={column.title}>
         {value !== null && value !== undefined && !column.required && (
           <div className="cw-option cw-option-clear" onMouseDown={event => { event.preventDefault(); pick(null) }}>{messages.bulk.clear}</div>
@@ -208,6 +209,7 @@ function SelectEditor({ value, column, row, initialText, onCommit, onCancel }: I
           </div>
         ))}
         {!list.filtered.length && <div className="cw-option-empty">{messages.ui.noMatchingOption}</div>}
+      </div>
       </div>
     </div>
   )
@@ -277,6 +279,7 @@ function MultiSelectEditor({ value, column, row, initialText, onCommit, onChange
         onBlur={finish}
         />
       </div>
+      <div className="cw-dropdown-popup">
       <div className="cw-options" role="listbox" id={listId} aria-label={column.title} aria-multiselectable>
         {list.filtered.map((entry, index) => (
           <div key={entry} role="option" aria-selected={selected.includes(entry)} aria-label={optionInfo(options, entry).label}
@@ -294,6 +297,7 @@ function MultiSelectEditor({ value, column, row, initialText, onCommit, onChange
         )}
       </div>
       <div className="cw-dropdown-hint">{messages.ui.multiSelectHint}</div>
+      </div>
     </div>
   )
 }

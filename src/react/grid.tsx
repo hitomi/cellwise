@@ -836,7 +836,8 @@ export function Grid({ table, rowHeight, headerHeight, ariaLabel, loading, onNot
               return <div key={upload.id} className="cw-cell-busy" style={rect({ rowStart: r, rowEnd: r, colStart: c, colEnd: c })}><span className="cw-spinner" aria-label={messages.image.uploading} /></div>
             })}
             {editing && Editor && editingColumn && editingRect && (
-              <div className="cw-editor" style={{ left: editingRect.left, top: editingRect.top, minWidth: editingRect.width, minHeight: editingRect.height }}
+              // Exactly the cell's box, so text stays where it was; popups open below it.
+              <div className="cw-editor" style={{ left: editingRect.left, top: editingRect.top, width: editingRect.width, height: editingRect.height, ...(editingRect.zIndex ? { zIndex: 11 } : {}) }}
                 onKeyDownCapture={event => {
                   if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); finishEditing(editing.id); return }
                   // A commit during this key event moves the selection; the move expires with the event.
