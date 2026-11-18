@@ -428,3 +428,24 @@
   .cw-chip-remove:hover { background: var(--cw-hover); color: var(--cw-fg); }
   .cw-option-tick { width: 12px; flex: none; color: var(--cw-accent); font-weight: 700; }
 }
+
+@layer cellwise {
+  /* edited cells: a dot top-right; hovering or tapping it shows the previous value */
+  .cw-root { --cw-dirty: var(--cw-changed-mark); }
+  .cw-dirty-dot {
+    position: absolute; top: 0; right: 0; width: 16px; height: 16px; z-index: 1; cursor: help;
+  }
+  .cw-dirty-dot::after {
+    content: ''; position: absolute; top: 4px; right: 4px; width: 6px; height: 6px; border-radius: 50%;
+    background: var(--cw-dirty);
+  }
+  .cw-original {
+    position: absolute; z-index: 9; transform: translate(-100%, -100%); margin-top: -2px;
+    display: flex; align-items: center; gap: 8px; max-width: 320px; padding: 5px 10px; border-radius: 6px;
+    background: var(--cw-bg); color: var(--cw-fg); border: 1px solid var(--cw-border); box-shadow: var(--cw-shadow);
+    font-size: 12px; white-space: nowrap; pointer-events: none;
+  }
+  .cw-original[data-below] { transform: translateX(-100%); margin-top: 2px; }
+  .cw-original-label { color: var(--cw-muted); }
+  .cw-original-value { display: inline-flex; align-items: center; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+}

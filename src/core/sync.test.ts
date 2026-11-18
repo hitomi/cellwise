@@ -294,3 +294,17 @@ describe('a new row delivered by the source before its save finishes', () => {
     expect(t.getStatus().changedRows).toBe(0)
   })
 })
+
+describe('original values of edited cells', () => {
+  it('reports the value before the unsaved edit, and nothing for new rows or after saving', async () => {
+    type Item = { id: number; name: string }
+    const t = createTable<Item>({ data: [{ id: 1, name: 'Old' }], columns: [{ field: 'name', type: 'text' }], onSave: () => {} })
+    expect(t.getCell(1, 'name').original).toBeUndefined()
+    t.setCell(1, 'name', 'New')
+    expect(t.getCell(1, 'name').original).toEqual({ value: 'Old' })
+    const added = t.insertRow({ values: { name: 'Draft' } })!
+    expect(t.getCell(added, 'name').original).toBeUndefined()
+    await t.save()
+    expect(t.getCell(1, 'name').original).toBeUndefined()
+  })
+})

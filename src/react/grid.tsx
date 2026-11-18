@@ -78,6 +78,8 @@ export function Grid({ table, rowHeight, headerHeight, ariaLabel, loading, onNot
   const uploadId = useRef(0)
   const [fillTarget, setFillTarget] = useState<CellRange | null>(null)
   const [menu, setMenu] = useState<Menu | null>(null)
+  // The edited cell whose previous value is shown (hovering or tapping its dot).
+  const [peek, setPeek] = useState<Pos | null>(null)
   const editId = useRef(0)
 
   // ---- geometry ---------------------------------------------------------
@@ -133,6 +135,7 @@ export function Grid({ table, rowHeight, headerHeight, ariaLabel, loading, onNot
       if (element) setViewport(current => ({ ...current, top: element.scrollTop, left: element.scrollLeft }))
     })
     setMenu(null)
+    setPeek(null)
   }
 
   /** Cell under a pointer, in view coordinates; null over the headers. */
@@ -466,6 +469,9 @@ export function Grid({ table, rowHeight, headerHeight, ariaLabel, loading, onNot
     }
     event.preventDefault()
     focusGrid()
+    // Tapping the dot of an edited cell shows its previous value (touch screens have no hover).
+    const dot = (event.target as HTMLElement).closest('.cw-dirty-dot')
+    setPeek(dot ? pos : null)
     // The ▾ of a select cell opens its options; the rest of the cell selects as usual.
     if ((event.target as HTMLElement).closest('.cw-dropdown-arrow') && !event.shiftKey && !event.metaKey && !event.ctrlKey) {
       select({ anchor: pos, focus: pos }, false)
@@ -790,6 +796,15 @@ export function Grid({ table, rowHeight, headerHeight, ariaLabel, loading, onNot
             {visibleColumns.filter(c => c >= pinnedCount).map(c => header(c, GUTTER + lefts[c]!))}
           </div>
           <div className="cw-body" style={{ height: bodyHeight }} onMouseDown={onBodyMouseDown}
+            onMouseOver={event => {
+              if (!(event.target as HTMLElement).closest('.cw-dirty-dot')) return
+              const pos = posAt(event.clientX, event.clientY)
+              if (pos && (pos.r !== peek?.r || pos.c !== peek?.c)) setPeek(pos)
+            }}
+            onMouseOut={event => {
+              const from = (event.target as HTMLElement).closest('.cw-dirty-dot')
+              if (from && !from.contains(event.relatedTarget as Node)) setPeek(null)
+            }}
             onDragOver={event => {
               if ((event.target as HTMLElement).closest('.cw-editor')) return
               const target = fileDropTarget(event)
@@ -828,6 +843,7 @@ export function Grid({ table, rowHeight, headerHeight, ariaLabel, loading, onNot
                 onMouseDown={startFill} />
             )}
             {fillTarget && <div className="cw-fill-preview" style={rect(fillTarget)} />}
+            {peek && !editing && <OriginalPeek table={table} columns={columns} pos={peek} rect={rect({ rowStart: peek.r, rowEnd: peek.r, colStart: peek.c, colEnd: peek.c })} below={peek.r * rowHeight - viewport.top < 40} />}
             {dropCell && <div className="cw-drop-target" style={rect({ rowStart: dropCell.r, rowEnd: dropCell.r, colStart: dropCell.c, colEnd: dropCell.c })}><span>{m.dropToUpload}</span></div>}
             {uploads.map(upload => {
               const r = table.getRowIndex(upload.key)
@@ -1036,6 +1052,7 @@ const GridRow = memo(function GridRow({ table, rowKey, index, row, columns, visi
     return (
       <GridCell key={column.field} column={column} index={c} value={state.value} changed={state.changed && !isNew} error={state.error}
         conflict={state.conflict} selected={spans.some(([from, to]) => c >= from && c <= to)}
+        hasOriginal={state.original !== undefined && !state.conflict}
         readOnly={tableReadOnly || table.canEdit(rowKey, column.field) ? false : column.alwaysReadOnly ? 'column' : 'row'}
         editable={!tableReadOnly && table.canEdit(rowKey, column.field)}
         left={left} width={lefts[c + 1]! - lefts[c]!} row={row} />
@@ -1065,6 +1082,8 @@ interface GridCellProps {
   index: number
   value: unknown
   conflict: { theirs: unknown } | undefined
+  /** Edited cell of a saved row: shows a dot that reveals the previous value. */
+  hasOriginal: boolean
   selected: boolean
   changed: boolean
   error: string | undefined
@@ -1076,7 +1095,7 @@ interface GridCellProps {
   row: unknown
 }
 
-const GridCell = memo(function GridCell({ column, index, value, conflict, selected, changed, error, readOnly, editable, left, width, row }: GridCellProps) {
+const GridCell = memo(function GridCell({ column, index, value, conflict, hasOriginal, selected, changed, error, readOnly, editable, left, width, row }: GridCellProps) {
   const messages = useMessages()
   // Option lists open from a ▾ button, so a plain click still selects the cell.
   const arrow = editable && (isBuiltin(column, 'select') || isBuiltin(column, 'multiSelect'))
@@ -1088,6 +1107,7 @@ const GridCell = memo(function GridCell({ column, index, value, conflict, select
       data-conflict={conflict ? true : undefined} data-has-arrow={arrow || undefined}
       title={conflict ? messages.ui.conflictTitle(theirs) : error ?? (readOnly ? messages.ui.readOnly : undefined)}>
       {column.render ? column.render(column.type.isEmpty(value) ? null : value, row) : renderCell(column, value)}
+      {hasOriginal && <span className="cw-dirty-dot" aria-hidden="true" />}
       {arrow && (
         <button type="button" tabIndex={-1} className="cw-dropdown-arrow" aria-label={messages.ui.openOptions(column.title)}>
           <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M2 3.5 5 6.5 8 3.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" /></svg>
@@ -1096,6 +1116,31 @@ const GridCell = memo(function GridCell({ column, index, value, conflict, select
     </div>
   )
 })
+
+/** The value an edited cell had before the unsaved edit, beside its dot. */
+function OriginalPeek({ table, columns, pos, rect, below }: {
+  table: Table<any>
+  columns: readonly ResolvedColumn[]
+  pos: Pos
+  rect: { left: number; top: number; width: number; height: number; zIndex?: number }
+  below: boolean
+}) {
+  const messages = table.getMessages()
+  const key = table.getRowKey(pos.r)
+  const column = columns[pos.c]
+  const original = key === undefined || !column ? undefined : table.getCell(key, column.field).original
+  if (!original || !column || key === undefined) return null
+  const empty = column.type.isEmpty(original.value)
+  const content = empty ? messages.ui.emptyValue
+    : column.render ? column.render(original.value, table.getRow(key)) : renderCell(column, original.value)
+  return (
+    <div className="cw-original" role="tooltip" data-below={below || undefined}
+      style={{ left: rect.left + rect.width, top: below ? rect.top + rect.height : rect.top, ...(rect.zIndex ? { zIndex: 12 } : {}) }}>
+      <span className="cw-original-label">{messages.ui.originalValue}</span>
+      <span className="cw-original-value">{content}</span>
+    </div>
+  )
+}
 
 /** The shortcut inside a hint, shown as a key. */
 function ApplyHint({ text, shortcut: key }: { text: string; shortcut: string }) {

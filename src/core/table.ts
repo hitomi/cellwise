@@ -147,6 +147,8 @@ export interface CellState {
   error: string | undefined
   /** Present when the source changed this cell while it had an unsaved edit. */
   conflict: { theirs: unknown } | undefined
+  /** The value before the unsaved edit, for edited cells of saved rows. */
+  original: { value: unknown } | undefined
 }
 
 type Entry<Row> = { key: RowKey; row: Row; at: number; viewAt: number }
@@ -1183,11 +1185,16 @@ export function createTable<Row>(options: TableOptions<Row>) {
     const row = rows.get(key)
     const column = columnByField.get(field)
     const cellConflicts = conflicts.get(key)
+    const base = baseline.get(key)
+    const edited = !column?.computed && (changed.get(key)?.has(field) ?? false)
     return {
       value: (row === undefined ? null : column ? column.get(row) : (row as R)[field]) ?? null,
       changed: !column?.computed && (created.has(key) || (changed.get(key)?.has(field) ?? false)),
       error: invalid.get(key)?.get(field) ?? undefined,
       conflict: cellConflicts?.has(field) ? { theirs: cellConflicts.get(field) } : undefined,
+      original: edited && base !== undefined && !created.has(key)
+        ? { value: (column ? column.get(base) : (base as R)[field]) ?? null }
+        : undefined,
     }
   }
 

@@ -60,7 +60,7 @@ export const zhCN: Messages = {
     conflictTitle: theirs => `编辑期间该值已被修改为“${theirs}”。右键选择如何处理。`,
     applyToAll: (shortcut, count) => `${shortcut} 应用到全部 ${n(count)} 个选中单元格`,
     applyingToAll: count => `将应用到全部 ${n(count)} 个选中单元格`,
-    findOption: '查找选项', openOptions: column => `展开${column}选项`, removeOption: label => `移除${label}`, createOption: text => `添加“${text}”`, noMatchingOption: '没有匹配的选项', multiSelectHint: 'Enter 选择/取消 · Tab 完成',
+    findOption: '查找选项', openOptions: column => `展开${column}选项`, removeOption: label => `移除${label}`, originalValue: '原值', createOption: text => `添加“${text}”`, noMatchingOption: '没有匹配的选项', multiSelectHint: 'Enter 选择/取消 · Tab 完成',
     filterWhere: '条件', filterAnd: '并且', noFilters: '暂无筛选条件，将显示满足全部条件的行。',
     addCondition: '+ 添加条件', chooseOption: '请选择…', value: '值', sortBy: '排序依据', thenBy: '其次',
     noSorting: '未排序，保持原始顺序。', ascending: '升序', descending: '降序', addSort: '+ 添加排序',
