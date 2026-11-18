@@ -137,6 +137,7 @@ export interface Messages {
     applyToAll: (shortcut: string, count: number) => string
     applyingToAll: (count: number) => string
     findOption: string
+    openOptions: (column: string) => string
     createOption: (text: string) => string
     noMatchingOption: string
     multiSelectHint: string
@@ -258,7 +259,7 @@ export const en: Messages = {
     conflictTitle: theirs => `Changed elsewhere to "${theirs}" while you were editing. Right-click to resolve.`,
     applyToAll: (shortcut, count) => `${shortcut} applies to all ${count.toLocaleString()} selected cells`,
     applyingToAll: count => `Applies to all ${count.toLocaleString()} selected cells`,
-    findOption: 'Find an option', createOption: text => `Add "${text}"`, noMatchingOption: 'No matching option', multiSelectHint: 'Enter toggles · Tab to finish',
+    findOption: 'Find an option', openOptions: column => `Open ${column} options`, createOption: text => `Add "${text}"`, noMatchingOption: 'No matching option', multiSelectHint: 'Enter toggles · Tab to finish',
     filterWhere: 'Where', filterAnd: 'and', noFilters: 'No filters. Rows matching every condition are shown.',
     addCondition: '+ Add condition', chooseOption: 'Choose…', value: 'Value', sortBy: 'Sort by', thenBy: 'then by',
     noSorting: 'No sorting. Rows keep their original order.', ascending: 'Ascending', descending: 'Descending',

@@ -393,3 +393,15 @@
 @layer cellwise {
   .cw-header-action { display: inline-flex; align-items: center; flex: none; }
 }
+
+@layer cellwise {
+  /* ▾ on select cells: opens the options; the rest of the cell selects */
+  .cw-cell[data-has-arrow] { padding-right: 28px; }
+  .cw-dropdown-arrow {
+    position: absolute; right: 4px; top: 50%; transform: translateY(-50%);
+    display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px;
+    padding: 0; border: 0; border-radius: 4px; background: none; color: var(--cw-muted); cursor: pointer;
+  }
+  .cw-dropdown-arrow:hover, .cw-cell[aria-selected='true'] .cw-dropdown-arrow { color: var(--cw-accent); background: var(--cw-accent-soft); }
+  @media (pointer: coarse) { .cw-dropdown-arrow { width: 32px; height: 32px; right: 0; } .cw-cell[data-has-arrow] { padding-right: 34px; } }
+}

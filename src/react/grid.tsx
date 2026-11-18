@@ -466,6 +466,12 @@ export function Grid({ table, rowHeight, headerHeight, ariaLabel, loading, onNot
     }
     event.preventDefault()
     focusGrid()
+    // The ▾ of a select cell opens its options; the rest of the cell selects as usual.
+    if ((event.target as HTMLElement).closest('.cw-dropdown-arrow') && !event.shiftKey && !event.metaKey && !event.ctrlKey) {
+      select({ anchor: pos, focus: pos }, false)
+      startEditing(pos)
+      return
+    }
     if ((event.target as HTMLElement).closest('.cw-check') && !event.shiftKey) {
       // Clicking a checkbox toggles it directly.
       select({ anchor: pos, focus: pos }, false)
@@ -1030,6 +1036,7 @@ const GridRow = memo(function GridRow({ table, rowKey, index, row, columns, visi
       <GridCell key={column.field} column={column} index={c} value={state.value} changed={state.changed && !isNew} error={state.error}
         conflict={state.conflict} selected={spans.some(([from, to]) => c >= from && c <= to)}
         readOnly={tableReadOnly || table.canEdit(rowKey, column.field) ? false : column.alwaysReadOnly ? 'column' : 'row'}
+        editable={!tableReadOnly && table.canEdit(rowKey, column.field)}
         left={left} width={lefts[c + 1]! - lefts[c]!} row={row} />
     )
   }
@@ -1062,21 +1069,29 @@ interface GridCellProps {
   error: string | undefined
   /** Read-only for the whole column, or only this row. */
   readOnly: false | 'column' | 'row'
+  editable: boolean
   left: number
   width: number
   row: unknown
 }
 
-const GridCell = memo(function GridCell({ column, index, value, conflict, selected, changed, error, readOnly, left, width, row }: GridCellProps) {
+const GridCell = memo(function GridCell({ column, index, value, conflict, selected, changed, error, readOnly, editable, left, width, row }: GridCellProps) {
   const messages = useMessages()
+  // Option lists open from a ▾ button, so a plain click still selects the cell.
+  const arrow = editable && (isBuiltin(column, 'select') || isBuiltin(column, 'multiSelect'))
   const theirs = conflict ? (column.type.isEmpty(conflict.theirs) ? messages.ui.emptyValue : column.type.format(conflict.theirs, column.options)) : ''
   return (
     <div className="cw-cell" role="gridcell" aria-colindex={index + 1} aria-selected={selected} aria-readonly={readOnly ? true : undefined}
       data-column-key={column.field} style={{ left, width, justifyContent: cellAlign(column) }}
       data-changed={changed || undefined} data-invalid={error ? true : undefined} data-readonly={readOnly || undefined}
-      data-conflict={conflict ? true : undefined}
+      data-conflict={conflict ? true : undefined} data-has-arrow={arrow || undefined}
       title={conflict ? messages.ui.conflictTitle(theirs) : error ?? (readOnly ? messages.ui.readOnly : undefined)}>
       {column.render ? column.render(column.type.isEmpty(value) ? null : value, row) : renderCell(column, value)}
+      {arrow && (
+        <button type="button" tabIndex={-1} className="cw-dropdown-arrow" aria-label={messages.ui.openOptions(column.title)}>
+          <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M2 3.5 5 6.5 8 3.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" /></svg>
+        </button>
+      )}
     </div>
   )
 })

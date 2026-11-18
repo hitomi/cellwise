@@ -1,6 +1,6 @@
 {
   "name": "cellwise",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Spreadsheet-like table editor for React, built around editing many cells at once",
   "license": "MIT",
   "homepage": "https://hitomi.github.io/cellwise/",
