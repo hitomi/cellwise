@@ -285,7 +285,7 @@ function MultiSelectEditor({ value, column, row, initialText, onCommit, onChange
           <div key={entry} role="option" aria-selected={selected.includes(entry)} aria-label={optionInfo(options, entry).label}
             className="cw-option" data-active={index === list.active || undefined}
             onMouseEnter={() => list.setActive(index)} onMouseDown={event => { event.preventDefault(); toggle(entry) }}>
-            <span className="cw-check" data-checked={selected.includes(entry) || undefined} />
+            <span className="cw-option-tick" aria-hidden="true">{selected.includes(entry) ? '✓' : ''}</span>
             <OptionContent column={column} value={entry} row={row} />
           </div>
         ))}
