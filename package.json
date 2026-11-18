@@ -1,0 +1,62 @@
+{
+  "name": "cellwise",
+  "version": "1.0.0-alpha.0",
+  "private": true,
+  "description": "Spreadsheet-like table editor for React, built around editing many cells at once",
+  "license": "MIT",
+  "homepage": "https://hitomi.github.io/cellwise/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hitomi/cellwise.git"
+  },
+  "keywords": [
+    "react",
+    "table",
+    "data-grid",
+    "spreadsheet",
+    "editor",
+    "bulk-edit"
+  ],
+  "type": "module",
+  "sideEffects": [
+    "**/*.css"
+  ],
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./core": {
+      "types": "./dist/core/index.d.ts",
+      "import": "./dist/core.js"
+    },
+    "./styles.css": "./dist/styles.css"
+  },
+  "packageManager": "pnpm@11.9.0",
+  "scripts": {
+    "dev": "vite --config vite.demo.config.ts",
+    "build": "vite build && cp src/styles.css dist/styles.css && tsc -p tsconfig.build.json",
+    "build:demo": "vite build --config vite.demo.config.ts",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --project unit",
+    "bench": "vitest run --project bench"
+  },
+  "peerDependencies": {
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "typescript": "~7.0.2",
+    "vite": "^8.2.1",
+    "vitest": "^4.1.10"
+  }
+}
