@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { isParseError } from '../core/field-type.js'
 import type { Messages } from '../core/messages.js'
-import type { CellRange, Filter, SaveOutcome, Sort, Table, TableOptions } from '../core/table.js'
+import type { CellRange, EditResult, Filter, SaveOutcome, Sort, Table, TableOptions } from '../core/table.js'
 import { BulkEditor } from './bulk-editor.js'
 import { isBuiltin, shortcut } from './cells.js'
 import { Grid, type GridHandle } from './grid.js'
+import { ContextMenu, quickActionColumns, quickActionItems, type Menu } from './menu.js'
 import { MessagesContext } from './messages-context.js'
 import { useDataTable, useTableVersion } from './use-data-table.js'
 
@@ -14,6 +15,8 @@ export interface ToolbarOptions {
   sort?: boolean
   addRow?: boolean
   undo?: boolean
+  /** "Quick edit" menu with the field types' one-click edits for the selected cells. */
+  quickActions?: boolean
   /** Shown after the built-in controls on the left, e.g. a view switch. */
   start?: ReactNode
   /** Shown before the save status and button on the right, e.g. a note input. */
@@ -106,7 +109,7 @@ function DataTableView<Row>({
       <div className={`cw-root${className ? ` ${className}` : ''}`} style={style} lang={messages.locale}>
         {toolbar === false ? null : typeof toolbar === 'function' ? toolbar(table) : (
           <Toolbar table={table} grid={grid} options={toolbar ?? {}} save={save}
-            selection={selection} onBulkEdit={() => setBulkRanges(selection)} />
+            selection={selection} onBulkEdit={() => setBulkRanges(selection)} onNotice={showNotice} />
         )}
         <Grid table={table} rowHeight={rowHeight} {...(headerHeight === undefined ? {} : { headerHeight })} {...(ariaLabel === undefined ? {} : { ariaLabel })}
           loading={loading ?? false} onNotice={showNotice} onSave={save}
@@ -133,13 +136,14 @@ function selectedCells(ranges: CellRange[]) {
   return ranges.reduce((sum, r) => sum + (r.rowEnd - r.rowStart + 1) * (r.colEnd - r.colStart + 1), 0)
 }
 
-function Toolbar({ table, grid, options, save, selection, onBulkEdit }: {
+function Toolbar({ table, grid, options, save, selection, onBulkEdit, onNotice }: {
   table: Table<any>
   grid: React.RefObject<GridHandle | null>
   options: ToolbarOptions
   save(): Promise<SaveOutcome>
   selection: CellRange[]
   onBulkEdit(): void
+  onNotice(message: string): void
 }) {
   useTableVersion(table)
   const m = table.getMessages().ui
@@ -189,6 +193,7 @@ function Toolbar({ table, grid, options, save, selection, onBulkEdit }: {
           {m.editCells(cells)}
         </button>
       )}
+      {show('quickActions') && <QuickEditButton table={table} grid={grid} selection={selection} onNotice={onNotice} />}
       {show('undo') && (
         <>
           <button type="button" className="cw-button cw-icon" onClick={() => table.undo()} disabled={!status.canUndo} title={`${m.undo} (${shortcut('Z')})`} aria-label={m.undo}><UndoIcon /></button>
@@ -214,6 +219,39 @@ function Toolbar({ table, grid, options, save, selection, onBulkEdit }: {
         </button>
       )}
     </div>
+  )
+}
+
+/** Opens the quick edits of the selected cells under the button; hidden when there are none. */
+function QuickEditButton({ table, grid, selection, onNotice }: {
+  table: Table<any>
+  grid: React.RefObject<GridHandle | null>
+  selection: CellRange[]
+  onNotice(message: string): void
+}) {
+  const m = table.getMessages().ui
+  const button = useRef<HTMLButtonElement>(null)
+  const [menu, setMenu] = useState<Menu | null>(null)
+  const close = useCallback(() => { setMenu(null); grid.current?.focus() }, [grid])
+  if (!quickActionColumns(table, selection).length) return null
+  const report = (result: EditResult) => {
+    if (!result.errors.length) return
+    const first = result.errors[0]!
+    onNotice(result.errors.length === 1 ? first.message : `${m.skipped(result.errors.length)} (${first.message})`)
+  }
+  return (
+    <>
+      <button ref={button} type="button" className="cw-button" aria-haspopup="menu" aria-expanded={!!menu}
+        data-active={menu ? true : undefined}
+        onClick={() => {
+          if (menu) { close(); return }
+          const rect = button.current!.getBoundingClientRect()
+          setMenu({ x: rect.left, y: rect.bottom + 4 })
+        }}>
+        {m.quickEdit} <span aria-hidden="true">▾</span>
+      </button>
+      {menu && <ContextMenu menu={menu} anchor={button} onClose={close} items={quickActionItems(table, selection, report)} />}
+    </>
   )
 }
 

@@ -6,7 +6,7 @@ A spreadsheet-like table editor for React, built around **editing many cells at 
 
 - **Multi-cell editing:** select any cells, including separate ranges with ⌘/Ctrl+click, type a value and press ⌘/Ctrl+Enter to apply it to all of them.
 - **Bulk edit panel (⌘/Ctrl+E):** per-column operations such as find and replace, prefix and suffix, increase by, add or remove tags and shift dates, with a live preview before applying.
-- **Quick edit from the context menu:** set an option, check, uncheck or toggle, ±1, today, change case and more, applied to the whole selection.
+- **Quick edit from the context menu or the toolbar:** set an option, check, uncheck or toggle, ±1, today, change case and more, applied to the whole selection.
 - **Image cells:** one image or a gallery per cell. Drop or paste images straight onto a cell, or use the editor (file picker, drag and drop, URL).
 - **Spreadsheet basics:** keyboard navigation, copy and paste with Excel and Google Sheets, drag-to-fill, undo and redo, filter, sort and search.
 - **Fast:** rows and columns are virtualized. A cell edit takes microseconds on 100k rows, no matter how long the history is.
@@ -116,6 +116,9 @@ import { zhCN } from 'cellwise/locales/zh-CN'
   onSaved={outcome => outcome.status === 'saved' && toast('Saved')}
 />
 ```
+
+Every part is on by default: `search`, `filter`, `sort`, `addRow`, `undo` and `quickActions` (the
+**Quick edit ▾** menu, shown when the selected columns have quick edits); pass `false` to hide one.
 
 `table.save()` commits the open editor first, so a value still being typed is saved too. For a
 navigation guard, call `table.commitEdit()` and then check `table.getStatus()`
