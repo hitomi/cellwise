@@ -506,3 +506,72 @@ describe('setup errors', () => {
     expect(() => createTable({ data: [{ id: 1 }, { id: 1 }], columns: [] })).toThrow(/Duplicate row id "1"/)
   })
 })
+
+describe('drafts', () => {
+  it('has no draft without changes, and a JSON round-trip draft with them', () => {
+    const t = table()
+    expect(t.getDraft()).toBeNull()
+    t.setCell(1, 'price', 4)
+    t.setCell(1, 'tags', ['a', 'b'])
+    t.deleteRows([2])
+    t.insertRow({ values: { name: 'Durian' } })
+    const draft = JSON.parse(JSON.stringify(t.getDraft()))
+    expect(draft).toEqual({
+      version: 1,
+      updated: [{ id: 1, cells: { price: { from: 3, to: 4 }, tags: { from: ['a'], to: ['a', 'b'] } } }],
+      created: [{ name: 'Durian' }],
+      deleted: [2],
+    })
+  })
+
+  it('restores a draft onto fresh data as unsaved changes, not as an undo step', () => {
+    const before = table()
+    before.setCell(1, 'price', 4)
+    before.deleteRows([2])
+    before.insertRow({ values: { name: 'Durian' } })
+    const t = table()
+    expect(t.restoreDraft(before.getDraft()!)).toEqual({ cells: 1, conflicts: 0, rows: 1, deleted: 1, skipped: 0 })
+    expect(t.getRow(1)?.price).toBe(4)
+    expect(t.getCell(1, 'price')).toMatchObject({ changed: true, original: { value: 3 } })
+    expect(t.getRow(2)).toBeUndefined()
+    expect(t.getChanges().created).toMatchObject([{ name: 'Durian' }])
+    expect(t.getStatus()).toMatchObject({ changedRows: 3, canUndo: false })
+  })
+
+  it('a cell the source changed since the draft becomes a conflict instead of being overwritten', () => {
+    const before = table()
+    before.setCell(1, 'price', 4)
+    before.setCell(2, 'name', 'Blueberry')
+    const t = createTable<Product>({ data: [{ ...data[0]!, price: 5 }, data[1]!, data[2]!], columns })
+    const result = t.restoreDraft(before.getDraft()!)
+    expect(result).toMatchObject({ cells: 2, conflicts: 1 })
+    expect(t.getRow(1)?.price).toBe(4)
+    expect(t.getCell(1, 'price').conflict).toEqual({ theirs: 5 })
+    expect(t.getCell(2, 'name')).toMatchObject({ changed: true, conflict: undefined })
+  })
+
+  it('skips changes that no longer apply and values the source already has', () => {
+    const before = table()
+    before.setCell(1, 'price', 4)
+    before.setCell(2, 'active', true)
+    before.setCell(3, 'name', 'Cranberry')
+    // Row 3 is gone, row 2 is now locked, and row 1 already has the drafted price.
+    const t = createTable<Product>({ data: [{ ...data[0]!, price: 4 }, { ...data[1]!, locked: true }], columns })
+    expect(t.restoreDraft(before.getDraft()!)).toEqual({ cells: 0, conflicts: 0, rows: 0, deleted: 0, skipped: 2 })
+    expect(t.getStatus().changedRows).toBe(0)
+  })
+
+  it('leaves out values that cannot be stored', () => {
+    const t = createTable<{ id: number; photo: string | null }>({ data: [{ id: 1, photo: null }], columns: defineColumns<{ id: number; photo: string | null }>([{ field: 'photo', type: 'text' }]) })
+    t.setCell(1, 'photo', 'blob:http://localhost/123')
+    expect(t.getDraft()).toBeNull()
+  })
+
+  it('ignores drafts in a read-only table', () => {
+    const before = table()
+    before.setCell(1, 'price', 4)
+    const t = table({ readOnly: true })
+    expect(t.restoreDraft(before.getDraft()!).cells).toBe(0)
+    expect(t.getRow(1)?.price).toBe(3)
+  })
+})

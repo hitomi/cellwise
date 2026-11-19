@@ -95,6 +95,8 @@ export interface Messages {
     sort: string
     addRow: string
     undo: string
+    /** Toolbar button that drops all unsaved changes (undoable). */
+    discard: string
     redo: string
     save: string
     saving: string
@@ -239,7 +241,7 @@ export const en: Messages = {
     remove: 'Remove', removeAll: 'Remove all',
   },
   ui: {
-    search: 'Search', filter: 'Filter', sort: 'Sort', addRow: '+ Row', undo: 'Undo', redo: 'Redo', save: 'Save',
+    search: 'Search', filter: 'Filter', sort: 'Sort', addRow: '+ Row', undo: 'Undo', redo: 'Redo', discard: 'Discard', save: 'Save',
     saving: 'Saving…', saved: 'All changes saved', saveFailed: error => `Save failed: ${error}`,
     unsavedRows: count => `${plural(count, 'unsaved row')}`, invalidCells: count => plural(count, 'invalid cell'),
     conflicts: count => plural(count, 'conflict'), readOnly: 'Read-only',

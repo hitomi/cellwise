@@ -6,6 +6,7 @@ A spreadsheet-like table editor for React, built around **editing many cells at 
 
 - **Multi-cell editing:** select any cells, including separate ranges with ⌘/Ctrl+click, type a value and press ⌘/Ctrl+Enter to apply it to all of them.
 - **Bulk edit panel (⌘/Ctrl+E):** per-column operations such as find and replace, prefix and suffix, increase by, add or remove tags and shift dates, with a live preview before applying.
+- **Local drafts:** unsaved changes survive a reload; cells changed on the server since become conflicts.
 - **Quick edit from the context menu or the toolbar:** set an option, check, uncheck or toggle, ±1, today, change case and more, applied to the whole selection.
 - **Image cells:** one image or a gallery per cell. Drop or paste images straight onto a cell, or use the editor (file picker, drag and drop, URL).
 - **Spreadsheet basics:** keyboard navigation, copy and paste with Excel and Google Sheets, drag-to-fill, undo and redo, filter, sort and search.
@@ -81,6 +82,29 @@ changes; with a table object call `table.syncData(rows)`.
 
 `table.setData(rows)` replaces everything instead (and clears unsaved changes).
 
+## Local drafts
+
+Unsaved changes can survive a reload or a closed tab:
+
+```tsx
+const table = useDataTable({
+  data, columns, onSave,
+  draft: { key: `products:${userId}`, ready: !isLoading, onRestore: result => toast(`Restored ${result.cells} edits`) },
+})
+```
+
+Changes are written to `localStorage` (or `storage`) 500 ms after each edit and when the page is
+hidden, and applied again once the data is loaded (`ready`, by default once `data` has rows).
+Saving or discarding clears the draft; drafts older than `maxAge` (7 days) are dropped.
+
+A restored edit whose cell changed on the server in the meantime becomes a **conflict** instead of
+overwriting the newer value. Rows that are gone and cells that became read-only are skipped.
+Values that cannot be stored, such as images not uploaded yet, are left out. Restored changes are
+not an undo step.
+
+For your own storage (IndexedDB, a server), use `table.getDraft()` (plain JSON, or `null`) and
+`table.restoreDraft(draft)`.
+
 ## Computed columns and custom cells
 
 ```ts
@@ -117,8 +141,9 @@ import { zhCN } from 'cellwise/locales/zh-CN'
 />
 ```
 
-Every part is on by default: `search`, `filter`, `sort`, `addRow`, `undo` and `quickActions` (the
-**Quick edit ▾** menu, shown when the selected columns have quick edits); pass `false` to hide one.
+Every part is on by default: `search`, `filter`, `sort`, `addRow`, `undo`, `discard` (drops all
+unsaved changes; undo brings them back) and `quickActions` (the **Quick edit ▾** menu, shown when
+the selected columns have quick edits); pass `false` to hide one.
 
 `table.save()` commits the open editor first, so a value still being typed is saved too. For a
 navigation guard, call `table.commitEdit()` and then check `table.getStatus()`

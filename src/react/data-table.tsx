@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { isParseError } from '../core/field-type.js'
 import type { Messages } from '../core/messages.js'
-import type { CellRange, EditResult, Filter, SaveOutcome, Sort, Table, TableOptions } from '../core/table.js'
+import type { CellRange, EditResult, Filter, SaveOutcome, Sort, Table } from '../core/table.js'
 import { BulkEditor } from './bulk-editor.js'
 import { isBuiltin, shortcut } from './cells.js'
 import { Grid, type GridHandle } from './grid.js'
 import { ContextMenu, quickActionColumns, quickActionItems, type Menu } from './menu.js'
 import { MessagesContext } from './messages-context.js'
-import { useDataTable, useTableVersion } from './use-data-table.js'
+import { useDataTable, useTableVersion, type UseDataTableOptions } from './use-data-table.js'
 
 export interface ToolbarOptions {
   search?: boolean
@@ -15,6 +15,8 @@ export interface ToolbarOptions {
   sort?: boolean
   addRow?: boolean
   undo?: boolean
+  /** "Discard" button that drops all unsaved changes; undo brings them back. */
+  discard?: boolean
   /** "Quick edit" menu with the field types' one-click edits for the selected cells. */
   quickActions?: boolean
   /** Shown after the built-in controls on the left, e.g. a view switch. */
@@ -49,14 +51,14 @@ export interface DataTableViewProps<Row> {
   onNotice?: (message: string) => void
 }
 
-export type DataTableProps<Row> = DataTableViewProps<Row> & ({ table: Table<Row> } | TableOptions<Row>)
+export type DataTableProps<Row> = DataTableViewProps<Row> & ({ table: Table<Row> } | UseDataTableOptions<Row>)
 
 /** Spreadsheet-like editor. Pass `data`, `columns` and `onSave`, or a `table` from `useDataTable`. */
 export function DataTable<Row>(props: DataTableProps<Row>) {
   return 'table' in props ? <DataTableView {...props} /> : <OwnedDataTable {...props} />
 }
 
-function OwnedDataTable<Row>(props: DataTableViewProps<Row> & TableOptions<Row>) {
+function OwnedDataTable<Row>(props: DataTableViewProps<Row> & UseDataTableOptions<Row>) {
   const table = useDataTable(props)
   return <DataTableView {...props} table={table} />
 }
@@ -162,6 +164,8 @@ function Toolbar({ table, grid, options, save, selection, onBulkEdit, onNotice }
     const key = table.insertRow()
     const r = key === undefined ? undefined : table.getRowIndex(key)
     if (r !== undefined) grid.current?.selectCell({ r, c: 0 })
+    // Typing goes to the new row, not to this button (Space or Enter would add another row).
+    grid.current?.focus()
   }
 
   const cells = selectedCells(selection)
@@ -203,6 +207,11 @@ function Toolbar({ table, grid, options, save, selection, onBulkEdit, onNotice }
       {options.start}
       <span className="cw-spacer" />
       {options.end}
+      {show('discard') && !table.isReadOnly() && (
+        <button type="button" className="cw-button" onClick={() => table.discardChanges()} disabled={status.saving || (!status.changedRows && !status.conflictCells)}>
+          {m.discard}
+        </button>
+      )}
       {table.isReadOnly() && <span className="cw-readonly-tag"><span aria-hidden="true">🔒</span> {m.readOnly}</span>}
       <span className="cw-save-status" data-error={status.saveError || status.conflictCells ? true : undefined} role="status">
         {status.saving ? m.saving

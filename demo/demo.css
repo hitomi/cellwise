@@ -22,3 +22,7 @@ kbd { font: 11px ui-monospace, monospace; padding: 0 4px; border: 1px solid #d1d
 .stars-editor button { border: 0; background: none; font-size: 18px; cursor: pointer; color: #d1d5db; padding: 0 1px; }
 .stars-editor button[data-on] { color: #f59e0b; }
 .stars-editor .stars-clear { font-size: 12px; color: #6b7280; margin-left: 6px; }
+
+.app-banner { display: flex; align-items: center; gap: 12px; margin: 0 16px 8px; padding: 8px 12px; border-radius: 6px; background: #eff6ff; color: #1e3a8a; font-size: 13px; }
+.app-banner button { margin-left: auto; }
+@media (prefers-color-scheme: dark) { .app-banner { background: #172554; color: #dbeafe; } }

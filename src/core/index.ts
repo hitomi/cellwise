@@ -1,7 +1,7 @@
 export { createTable } from './table.js'
 export type {
-  BulkEdit, BulkPlan, CellError, CellRange, CellState, CellTarget, EditResult, Filter, RowKey, SaveError, SaveHandler, SaveOutcome,
-  SaveResult, Sort, Table, TableChanges, TableOptions, TableStatus, TableUI,
+  BulkEdit, BulkPlan, CellError, CellRange, CellState, CellTarget, DraftRestore, EditResult, Filter, RowKey, SaveError, SaveHandler, SaveOutcome,
+  SaveResult, Sort, Table, TableChanges, TableDraft, TableOptions, TableStatus, TableUI,
 } from './table.js'
 export { defineColumns } from './columns.js'
 export type { Column, ComputedColumn, FieldKey, ResolvedColumn, RowId } from './columns.js'

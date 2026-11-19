@@ -1,6 +1,6 @@
 import { StrictMode, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { createImageType, DataTable, defineColumns, defineFieldType, type TableChanges } from '../src/index.js'
+import { createImageType, DataTable, defineColumns, defineFieldType, type DraftRestore, type TableChanges } from '../src/index.js'
 import { zhCN } from '../src/locales/zh-cn.js'
 import '../src/styles.css'
 import './demo.css'
@@ -138,6 +138,11 @@ function makeRows(count: number): Product[] {
 type LogEntry = { at: string; summary: string; detail: string; failed?: boolean }
 const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 
+function describeRestore({ cells, rows, deleted }: DraftRestore) {
+  const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? '' : 's'}`
+  return [cells && `${plural(cells, 'cell')} edited`, rows && `${plural(rows, 'new row')}`, deleted && `${plural(deleted, 'row')} deleted`].filter(Boolean).join(', ')
+}
+
 function App() {
   const [size, setSize] = useState(1000)
   const [data, setData] = useState(() => makeRows(1000))
@@ -155,6 +160,7 @@ function App() {
   const [failNext, setFailNext] = useState(false)
   const [log, setLog] = useState<LogEntry[]>([])
   const [nextId] = useState(() => ({ value: 1_000_000 }))
+  const [restored, setRestored] = useState<DraftRestore | null>(null)
 
   async function onSave(changes: TableChanges<Product>) {
     await wait(600)
@@ -191,6 +197,13 @@ function App() {
         <button type="button" onClick={simulateRemoteChange} title="Changes the name and price of rows 1–3, as if another user saved them">Simulate a change by another user</button>
         <button type="button" onClick={() => setLog([])}>Clear log</button>
       </header>
+      {restored && (restored.cells + restored.rows + restored.deleted > 0) && (
+        <div className="app-banner" role="status">
+          Restored your unsaved changes from last time: {describeRestore(restored)}.
+          {restored.conflicts > 0 && ' Cells that changed on the server since then are marked as conflicts.'}
+          <button type="button" onClick={() => setRestored(null)}>OK</button>
+        </div>
+      )}
       <main className="app-main">
         <div className="app-table">
           <DataTable
@@ -201,6 +214,8 @@ function App() {
             createRow={() => ({ name: '', sku: '', category: 'hardware', tags: [], price: null, stock: 0, active: true, launch: null, rating: null, photo: null, gallery: [], notes: '' })}
             onSave={onSave}
             {...(autoSave ? { autoSave: 1000 } : {})}
+            // Unsaved edits survive a reload: they are kept in localStorage until saved or discarded.
+            draft={{ key: `cellwise-demo:${size}`, onRestore: setRestored }}
           />
         </div>
         <aside className="app-side">
@@ -212,6 +227,10 @@ function App() {
             <li><kbd>⌘E</kbd> or right-click → <b>Edit N cells…</b>: per-column operations (find &amp; replace, prefix, increase by, add/remove tags, shift dates…) with a live preview</li>
             <li>Right-click for <b>quick edits</b> by column type: set a category, add/remove tags, check/uncheck/toggle, ±1, round, today, shift dates, change case, set a rating</li>
             <li><kbd>Del</kbd>, paste and <kbd>Space</kbd> on checkboxes also apply to every range</li>
+          </ul>
+          <h2>Local drafts</h2>
+          <ul>
+            <li>Edit some cells, add or delete a row, then reload the page: your unsaved changes come back (<code>draft=&#123;&#123; key &#125;&#125;</code>). Saving or <b>Discard</b> clears the draft.</li>
           </ul>
           <h2>Live data</h2>
           <ul>

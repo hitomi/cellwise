@@ -41,7 +41,7 @@ export const zhCN: Messages = {
     remove: '移除', removeAll: '全部移除',
   },
   ui: {
-    search: '搜索', filter: '筛选', sort: '排序', addRow: '+ 新增行', undo: '撤销', redo: '重做', save: '保存',
+    search: '搜索', filter: '筛选', sort: '排序', addRow: '+ 新增行', undo: '撤销', redo: '重做', discard: '放弃修改', save: '保存',
     saving: '正在保存…', saved: '已全部保存', saveFailed: error => `保存失败：${error}`,
     unsavedRows: count => `${n(count)} 行未保存`, invalidCells: count => `${n(count)} 个单元格无效`,
     conflicts: count => `${n(count)} 处冲突`, readOnly: '只读', editCells: count => `编辑 ${n(count)} 个单元格`,

@@ -65,6 +65,31 @@ export interface TableChanges<Row> {
   deleted: RowId[]
 }
 
+/**
+ * Unsaved changes as plain JSON, e.g. to keep in `localStorage` and restore after a reload
+ * with `table.restoreDraft`. Values that cannot be stored (files, `blob:` URLs of images not
+ * uploaded yet, functions) are left out.
+ */
+export interface TableDraft {
+  version: 1
+  /** Edited cells of saved rows: the value the edit started `from` and the value it set (`to`). */
+  updated: { id: RowId; cells: Record<string, { from: unknown; to: unknown }> }[]
+  /** Values of new rows. */
+  created: Record<string, unknown>[]
+  deleted: RowId[]
+}
+
+export interface DraftRestore {
+  /** Cells set from the draft. */
+  cells: number
+  /** Restored cells whose source value changed since the draft; they are conflicts to resolve. */
+  conflicts: number
+  rows: number
+  deleted: number
+  /** Changes that no longer apply: the row is gone, or the cell is read-only now. */
+  skipped: number
+}
+
 export interface SaveError<Row> {
   /** Id of an updated or deleted row. */
   id?: RowId
@@ -1043,6 +1068,68 @@ export function createTable<Row>(options: TableOptions<Row>) {
     }
   }
 
+  /** The unsaved changes as storable JSON (see `TableDraft`). Null when there are none. */
+  function getDraft(): TableDraft | null {
+    const updated: TableDraft['updated'] = []
+    for (const [key, fields] of changed) {
+      const base = baseline.get(key) as R | undefined, row = rows.get(key) as R | undefined
+      if (!base || !row || !fields.size) continue
+      const cells: Record<string, { from: unknown; to: unknown }> = {}
+      for (const field of fields) {
+        if (storable(base[field]) && storable(row[field])) cells[field] = { from: base[field] ?? null, to: row[field] ?? null }
+      }
+      if (Object.keys(cells).length) updated.push({ id: getId(base), cells })
+    }
+    const createdRows = [...created].map(key => {
+      const values: Record<string, unknown> = {}
+      for (const [field, value] of Object.entries(rows.get(key) as R)) if (storable(value)) values[field] = value
+      return values
+    })
+    const deletedIds = [...deleted.values()].map(getId)
+    if (!updated.length && !createdRows.length && !deletedIds.length) return null
+    return { version: 1, updated, created: createdRows, deleted: deletedIds }
+  }
+
+  /**
+   * Re-apply a draft from `getDraft` to the current data, e.g. after a reload. A cell the
+   * source changed since the draft becomes a conflict (keep mine / use theirs) instead of
+   * silently overwriting the newer value. Restored changes are not an undo step.
+   */
+  function restoreDraft(draft: TableDraft): DraftRestore {
+    const result: DraftRestore = { cells: 0, conflicts: 0, rows: 0, deleted: 0, skipped: 0 }
+    if (readOnly || draft?.version !== 1) return result
+    run('none', () => {
+      for (const { id, cells } of draft.updated ?? []) {
+        const key = idAlias.get(id) ?? id
+        const base = baseline.get(key) as R | undefined
+        if (!base || !rows.has(key) || deleted.has(key)) { result.skipped += Object.keys(cells).length; continue }
+        for (const [field, { from, to }] of Object.entries(cells)) {
+          const column = columnByField.get(field)
+          if (!column || column.computed || editable(key, field) !== undefined) { result.skipped++; continue }
+          const theirs = base[field]
+          // The source already has the drafted value: nothing left to do.
+          if (sameValue(column, theirs, to)) continue
+          if (!write(key, field, to)) continue
+          result.cells++
+          if (!sameValue(column, theirs, from)) { markConflict(key, field, theirs); result.conflicts++ }
+        }
+      }
+      for (const id of draft.deleted ?? []) {
+        const key = idAlias.get(id) ?? id
+        if (!baseline.has(key) || !rows.has(key)) { result.skipped++; continue }
+        result.deleted += deleteKeys([key])
+      }
+      if (canInsertRows && draft.created?.length) {
+        const entries = draft.created.map((values, index) => ({
+          key: `new:${nextNewKey++}`, row: { ...createRowValues(), ...values } as Row, at: order.length + index, viewAt: view.length + index,
+        }))
+        insertEntries(entries)
+        result.rows = entries.length
+      } else result.skipped += draft.created?.length ?? 0
+    })
+    return result
+  }
+
   function save(): Promise<SaveOutcome> {
     clearTimeout(autoSaveTimer)
     if (saving) {
@@ -1286,6 +1373,8 @@ export function createTable<Row>(options: TableOptions<Row>) {
     /** Re-apply filter and sort to edited rows. */
     refreshView: () => setView({}),
     // data
+    getDraft,
+    restoreDraft,
     setData,
     syncData,
     setColumns,
@@ -1325,6 +1414,20 @@ export function createTable<Row>(options: TableOptions<Row>) {
       listeners.clear()
     },
   }
+}
+
+/** Whether a value survives JSON storage as itself: plain data without files or `blob:` URLs. */
+function storable(value: unknown): boolean {
+  if (value === null || value === undefined) return true
+  if (typeof value === 'string') return !value.startsWith('blob:')
+  if (typeof value === 'number') return Number.isFinite(value)
+  if (typeof value === 'boolean') return true
+  if (Array.isArray(value)) return value.every(storable)
+  if (typeof value === 'object') {
+    const prototype = Object.getPrototypeOf(value)
+    return (prototype === Object.prototype || prototype === null) && Object.values(value as object).every(storable)
+  }
+  return false
 }
 
 /** Structural equality for plain data (objects, arrays, primitives). */
